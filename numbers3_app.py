@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
-from test import (
+from numbers3_predictor import (
     main_with_improved_predictions,
     evaluate_and_summarize_predictions
 )
