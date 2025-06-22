@@ -14,3 +14,4 @@ gym
 optuna
 aiohttp
 neuralforecast
+onnxruntime
