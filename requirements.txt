@@ -10,3 +10,4 @@ catboost
 lightgbm
 statsmodels
 stable_baselines3
+gym
