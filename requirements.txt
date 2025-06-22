@@ -14,3 +14,4 @@ stable_baselines3
 gym
 optuna
 aiohttp
+neuralforecast
