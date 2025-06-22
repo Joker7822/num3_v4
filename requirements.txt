@@ -8,3 +8,4 @@ lxml==4.6.5
 xgboost==1.7.6
 catboost
 lightgbm
+statsmodels
