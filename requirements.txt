@@ -16,3 +16,4 @@ optuna
 aiohttp
 neuralforecast
 onnxruntime
+autogluon
