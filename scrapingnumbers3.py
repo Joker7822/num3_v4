@@ -9,7 +9,7 @@ from selenium.webdriver.support import expected_conditions as EC
 import pandas as pd
 
 # === 設定 ===
-chrome_service = Service(r"C:\Users\lsaka\OneDrive\デスクトップ\Numbers\chromedriver.exe")
+chrome_service = Service("drivers/chromedriver")
 chrome_options = Options()
 chrome_options.add_argument("--headless")
 driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
