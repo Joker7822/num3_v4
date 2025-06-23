@@ -13,34 +13,13 @@ st.set_page_config(page_title="Numbers3予測AI", layout="wide")
 st.title("🎯 Numbers3 予測AIダッシュボード")
 
 menu = st.sidebar.radio("メニュー", [
-    "予測実行", 
+    "最新予測表示", 
     "予測評価", 
     "予測分析グラフ", 
-    "予測結果表示", 
-    "最新予測表示"
+    "予測結果表示"
 ])
 
-if menu == "予測実行":
-    st.subheader("📈 最新予測の実行")
-
-    if st.button("予測を開始"):
-        with st.spinner("スクレイピングと予測を実行中...しばらくお待ちください"):
-            try:
-                # 最新抽せんデータの取得
-                subprocess.run(["python", "scrapingnumbers3.py"], check=True)
-                st.info("✅ 最新の抽せん結果を取得しました")
-            except subprocess.CalledProcessError as e:
-                st.error(f"❌ スクレイピング中にエラーが発生しました: {e}")
-                st.stop()
-
-            try:
-                # 予測処理の実行
-                main_with_improved_predictions()
-                st.success("✅ 予測が完了しました！")
-            except Exception as e:
-                st.error(f"❌ 予測処理中にエラーが発生しました: {e}")
-
-elif menu == "最新予測表示":
+if menu == "最新予測表示":
     st.subheader("🧠 最新の『予測』結果")
 
     if os.path.exists("Numbers3_predictions.csv"):
