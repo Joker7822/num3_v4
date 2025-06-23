@@ -50,7 +50,7 @@ elif menu == "最新予測表示":
 
             st.markdown(f"**抽せん日:** {latest_row['抽せん日']}")
             st.markdown(f"**最新予測:** `{latest_row['予測2']}`")
-
+            st.markdown(f"**最新予測:** `{latest_row['予測1']}`")
         except Exception as e:
             st.error(f"ファイル読み込みまたは処理中にエラーが発生しました: {e}")
     else:
