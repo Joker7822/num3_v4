@@ -2,31 +2,54 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+from datetime import datetime, time
 from numbers3_predictor import (
     main_with_improved_predictions,
     evaluate_and_summarize_predictions
 )
+
+# ========= 自動予測実行のチェック =========
+LOG_FILE = "last_prediction_log.txt"
+
+def already_predicted_today():
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "r") as f:
+            last_run = f.read().strip()
+            return last_run == today_str
+    return False
+
+def mark_prediction_done():
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    with open(LOG_FILE, "w") as f:
+        f.write(today_str)
+
+now = datetime.now()
+if (
+    now.weekday() < 5 and             # 月〜金
+    now.time() >= time(21, 0) and     # 21:00以降
+    not already_predicted_today()
+):
+    with st.spinner("⏳ 平日21:00を過ぎたため、自動で予測を実行しています..."):
+        try:
+            main_with_improved_predictions()
+            mark_prediction_done()
+            st.success("✅ 本日の自動予測が完了しました")
+        except Exception as e:
+            st.error(f"❌ 自動予測中にエラーが発生しました: {e}")
 
 # ========= ページ設定・UI =========
 st.set_page_config(page_title="Numbers3予測AI", layout="wide")
 st.markdown("<h1 style='color:#FF4B4B;'>🎯 Numbers3 予測AI</h1>", unsafe_allow_html=True)
 
 menu = st.sidebar.radio("📌 メニュー", [
-    "🧠 最新予測表示",
-    "🎯 最新予測実行", 
+    "🧠 最新予測表示", 
     "📊 予測評価", 
     "📉 予測分析グラフ", 
     "🧾 予測結果表示"
 ])
-if menu == "予測実行":
-    st.subheader("📈 最新予測の実行")
 
-    if st.button("予測を開始"):
-        with st.spinner("予測を実行中...しばらくお待ちください"):
-            main_with_improved_predictions()
-        st.success("予測が完了しました！")
-
-el# 最新予測表示
+# 最新予測表示
 if "最新予測" in menu:
     st.markdown("## 🧠 最新予測結果")
     with st.container():
