@@ -49,7 +49,7 @@ elif menu == "最新予測表示":
             latest_row = pred_df.sort_values("抽せん日", ascending=False).iloc[0]
 
             st.markdown(f"**抽せん日:** {latest_row['抽せん日']}")
-            st.markdown(f"**予測2:** `{latest_row['予測2']}`")
+            st.markdown(f"**最新予測:** `{latest_row['予測2']}`")
 
         except Exception as e:
             st.error(f"ファイル読み込みまたは処理中にエラーが発生しました: {e}")
