@@ -29,8 +29,15 @@ if "最新予測" in menu:
                 latest_row = pred_df.sort_values("抽せん日", ascending=False).iloc[0]
 
                 st.success(f"✅ 最新予測が取得されました（抽せん日: {latest_row['抽せん日']}）")
-                st.markdown(f"**🎯 予測2:** `{latest_row['予測2']}`")
-                st.markdown(f"**🎯 予測1:** `{latest_row['予測1']}`")
+
+                st.markdown(f"""
+                    <div style='padding: 1.5rem; background-color: #f0f8ff; border-radius: 10px; text-align: center;'>
+                        <h2 style='color:#4B9CD3;'>📅 抽せん日: {latest_row['抽せん日']}</h2>
+                        <p style='font-size: 2.8rem; color: #FF4B4B; margin: 0.5em 0;'>🎯 <strong>予測2:</strong> {latest_row['予測2']}</p>
+                        <p style='font-size: 2.4rem; color: #00aa88; margin: 0.5em 0;'>💡 <strong>予測1:</strong> {latest_row['予測1']}</p>
+                    </div>
+                """, unsafe_allow_html=True)
+
             except Exception as e:
                 st.error(f"❌ ファイルの読み込み中にエラーが発生しました: {e}")
         else:
