@@ -41,11 +41,11 @@ if menu == "予測実行":
                 st.error(f"❌ 予測処理中にエラーが発生しました: {e}")
 
 elif menu == "最新予測表示":
-    st.subheader("🧠 最新の『予測2』結果")
+    st.subheader("🧠 最新の『予測』結果")
 
-    if os.path.exists("numbers3_predictions.csv"):
+    if os.path.exists("Numbers3_predictions.csv"):
         try:
-            pred_df = pd.read_csv("numbers3_predictions.csv")
+            pred_df = pd.read_csv("Numbers3_predictions.csv")
             latest_row = pred_df.sort_values("抽せん日", ascending=False).iloc[0]
 
             st.markdown(f"**抽せん日:** {latest_row['抽せん日']}")
