@@ -18,7 +18,7 @@ menu = st.sidebar.radio("メニュー", [
 ])
 
 if menu == "最新予測表示":
-    st.subheader("🧠 最新の『予測1』『予測2』結果")
+    st.subheader("🧠 最新予測結果")
 
     if os.path.exists("Numbers3_predictions.csv"):
         try:
