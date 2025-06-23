@@ -61,8 +61,8 @@ elif menu == "予測分析グラフ":
 elif menu == "予測結果表示":
     st.subheader("🧾 最新の予測結果（過去10件）")
 
-    if os.path.exists("numbers3_predictions.csv"):
-        pred_df = pd.read_csv("numbers3_predictions.csv")
+    if os.path.exists("Numbers3_predictions.csv"):
+        pred_df = pd.read_csv("Numbers3_predictions.csv")
         st.dataframe(pred_df.sort_values("抽せん日", ascending=False).head(10))
     else:
         st.warning("⚠️ 予測結果ファイルが見つかりません。まずは予測を実行してください。")
