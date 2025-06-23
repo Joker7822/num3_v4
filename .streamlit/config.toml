@@ -1,2 +1,10 @@
 [global]
 pythonVersion = "3.11"
+# SSH秘密鍵（ローカルで生成した id_ed25519 の内容を貼り付け）
+PRIVATE_SSH_KEY = """
+-----BEGIN OPENSSH PRIVATE KEY-----
+...
+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
+...
+-----END OPENSSH PRIVATE KEY-----
+"""
