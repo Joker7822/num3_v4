@@ -24,24 +24,15 @@ def mark_prediction_done():
     with open(LOG_FILE, "w") as f:
         f.write(today_str)
 
-now = datetime.now()
-if (
-    now.weekday() < 5 and             # 月〜金
-    now.time() >= time(21, 0) and     # 21:00以降
-    not already_predicted_today()
-):
-    with st.spinner("⏳ 平日21:00を過ぎたため、自動で予測を実行しています..."):
-        try:
-            main_with_improved_predictions()
-            mark_prediction_done()
-            st.success("✅ 本日の自動予測が完了しました")
-        except Exception as e:
-            st.error(f"❌ 自動予測中にエラーが発生しました: {e}")
-
 # ========= ページ設定・UI =========
 st.set_page_config(page_title="Numbers3予測AI", layout="wide")
 st.markdown("<h1 style='color:#FF4B4B;'>🎯 Numbers3 予測AI</h1>", unsafe_allow_html=True)
 
+# 現在時刻の表示（ログ確認用）
+now = datetime.now()
+st.caption(f"🕒 現在時刻: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+
+# ========= メニュー =========
 menu = st.sidebar.radio("📌 メニュー", [
     "🧠 最新予測表示", 
     "📊 予測評価", 
@@ -49,8 +40,25 @@ menu = st.sidebar.radio("📌 メニュー", [
     "🧾 予測結果表示"
 ])
 
-# 最新予測表示
-if "最新予測" in menu:
+# ========= 自動予測実行ブロック =========
+if now.weekday() < 5 and now.time() >= time(21, 0) and not already_predicted_today():
+    with st.spinner("⏳ 平日21:00を過ぎたため、自動で予測を実行しています..."):
+        try:
+            main_with_improved_predictions()
+            mark_prediction_done()
+            st.success("✅ 本日の自動予測が完了しました")
+        except Exception as e:
+            st.error(f"❌ 自動予測中にエラーが発生しました: {e}")
+else:
+    if already_predicted_today():
+        st.info("✅ 本日の予測はすでに実行済みです。")
+    elif now.weekday() >= 5:
+        st.info("📴 土日は自動予測を行いません。")
+    elif now.time() < time(21, 0):
+        st.info("⏳ 本日の自動予測は 21:00 以降に実行されます。")
+
+# ========= 最新予測表示 =========
+if menu == "🧠 最新予測表示":
     st.markdown("## 🧠 最新予測結果")
     with st.container():
         if os.path.exists("Numbers3_predictions.csv"):
@@ -58,7 +66,7 @@ if "最新予測" in menu:
                 pred_df = pd.read_csv("Numbers3_predictions.csv")
                 latest_row = pred_df.sort_values("抽せん日", ascending=False).iloc[0]
 
-                st.success(f"✅ 最新予測が取得されました")
+                st.success("✅ 最新予測が取得されました")
 
                 st.markdown(f"""
                     <div style='padding: 1.5rem; background-color: #f0f8ff; border-radius: 10px; text-align: center;'>
@@ -73,8 +81,8 @@ if "最新予測" in menu:
         else:
             st.warning("⚠️ 予測結果ファイルが見つかりません。まずは予測を実行してください。")
 
-# 予測評価
-elif "予測評価" in menu:
+# ========= 予測評価 =========
+elif menu == "📊 予測評価":
     st.markdown("## 📊 予測精度の評価")
     with st.container():
         if st.button("🧪 評価を実行"):
@@ -92,8 +100,8 @@ elif "予測評価" in menu:
             st.markdown("### 📋 評価結果（詳細）")
             st.dataframe(eval_df, use_container_width=True)
 
-# 予測分析グラフ
-elif "分析グラフ" in menu:
+# ========= 分析グラフ =========
+elif menu == "📉 予測分析グラフ":
     st.markdown("## 📉 予測の分析グラフ")
     with st.container():
         if os.path.exists("prediction_analysis.png"):
@@ -101,8 +109,8 @@ elif "分析グラフ" in menu:
         else:
             st.warning("⚠️ 分析グラフがまだ生成されていません。先に予測を実行してください。")
 
-# 予測結果表示
-elif "予測結果" in menu:
+# ========= 予測結果表示 =========
+elif menu == "🧾 予測結果表示":
     st.markdown("## 🧾 最新の予測結果（過去10件）")
     with st.container():
         if os.path.exists("Numbers3_predictions.csv"):
