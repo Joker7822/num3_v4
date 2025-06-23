@@ -9,9 +9,12 @@ from selenium.webdriver.support import expected_conditions as EC
 import pandas as pd
 
 # === 設定 ===
-chrome_service = Service("drivers/chromedriver")
+chrome_service = Service("drivers/chromedriver")  # プロジェクト内に配置されたchromedriver
 chrome_options = Options()
 chrome_options.add_argument("--headless")
+chrome_options.add_argument("--no-sandbox")
+chrome_options.add_argument("--disable-dev-shm-usage")
+
 driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
 
 url = "https://www.mizuhobank.co.jp/takarakuji/check/numbers/numbers3/index.html"
@@ -66,7 +69,8 @@ finally:
     driver.quit()
 
 # === 保存処理 ===
-csv_path = r"C:\Users\lsaka\OneDrive\デスクトップ\Numbers\NUM3\numbers3.csv"
+csv_path = "numbers3.csv"  # プロジェクトルートに出力
+
 try:
     existing = pd.read_csv(csv_path)
     existing_dates = existing["抽せん日"].tolist()
