@@ -9,7 +9,7 @@ from numbers3_predictor import (
 
 # ページ設定
 st.set_page_config(page_title="Numbers3予測AI", layout="wide")
-st.markdown("<h1 style='color:#FF4B4B;'>🎯 Numbers3 予測AIダッシュボード</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:#FF4B4B;'>🎯 Numbers3 予測AI</h1>", unsafe_allow_html=True)
 
 # サイドバー
 menu = st.sidebar.radio("📌 メニュー", [
@@ -28,13 +28,13 @@ if "最新予測" in menu:
                 pred_df = pd.read_csv("Numbers3_predictions.csv")
                 latest_row = pred_df.sort_values("抽せん日", ascending=False).iloc[0]
 
-                st.success(f"✅ 最新予測が取得されました（抽せん日: {latest_row['抽せん日']}）")
+                st.success(f"✅ 最新予測が取得されました")
 
                 st.markdown(f"""
                     <div style='padding: 1.5rem; background-color: #f0f8ff; border-radius: 10px; text-align: center;'>
                         <h2 style='color:#4B9CD3;'>📅 抽せん日: {latest_row['抽せん日']}</h2>
-                        <p style='font-size: 2.8rem; color: #FF4B4B; margin: 0.5em 0;'>🎯 <strong>予測2:</strong> {latest_row['予測2']}</p>
-                        <p style='font-size: 2.4rem; color: #00aa88; margin: 0.5em 0;'>💡 <strong>予測1:</strong> {latest_row['予測1']}</p>
+                        <p style='font-size: 2.8rem; color: #FF4B4B; margin: 0.5em 0;'>🎯 <strong>予測:</strong> {latest_row['予測2']}</p>
+                        <p style='font-size: 2.4rem; color: #00aa88; margin: 0.5em 0;'>💡 <strong>予測:</strong> {latest_row['予測1']}</p>
                     </div>
                 """, unsafe_allow_html=True)
 
