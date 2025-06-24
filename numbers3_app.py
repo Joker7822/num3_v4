@@ -38,7 +38,7 @@ def display_scraping_log():
 now = datetime.now()
 if (
     now.weekday() < 5 and
-    now.time() >= time(21, 0) and
+    now.time() >= time(20, 0) and
     not already_predicted_today()
 ):
     with st.spinner("⏳ 平日21:00を過ぎたため、自動で予測を実行しています..."):
