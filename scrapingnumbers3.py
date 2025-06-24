@@ -7,34 +7,45 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import pandas as pd
+import sys
 
-# === 設定 ===
-chrome_service = Service("drivers/chromedriver")  # プロジェクト内に配置されたchromedriver
+# === ログファイル設定 ===
+LOG_FILE = "scraping_log.txt"
+
+def log(msg):
+    print(msg)
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(msg + "\n")
+
+# === セットアップ ===
+chrome_service = Service("drivers/chromedriver")
 chrome_options = Options()
 chrome_options.add_argument("--headless")
 chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--disable-dev-shm-usage")
 
 driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
+log("[INFO] ドライバ初期化完了")
 
 url = "https://www.mizuhobank.co.jp/takarakuji/check/numbers/numbers3/index.html"
 driver.get(url)
 wait = WebDriverWait(driver, 10)
+log("[INFO] ページアクセス成功")
 
 data = []
 
 try:
-    # 複数件取得
     dates = wait.until(EC.presence_of_all_elements_located((By.CLASS_NAME, "js-lottery-date-pc")))
     numbers = driver.find_elements(By.CLASS_NAME, "js-lottery-number-pc")
     issues = driver.find_elements(By.CLASS_NAME, "js-lottery-issue-pc")
     prize_elems = driver.find_elements(By.CSS_SELECTOR, "tr.js-lottery-prize-pc strong.section__text--bold")
 
     num_results = min(len(dates), len(numbers), len(issues))
+    log(f"[INFO] 取得対象件数: {num_results}")
 
     for i in range(num_results):
         try:
-            # 各回の要素を毎回再取得
+            # 毎回再取得
             dates = driver.find_elements(By.CLASS_NAME, "js-lottery-date-pc")
             numbers = driver.find_elements(By.CLASS_NAME, "js-lottery-number-pc")
             issues = driver.find_elements(By.CLASS_NAME, "js-lottery-issue-pc")
@@ -42,7 +53,7 @@ try:
 
             draw_date = datetime.strptime(dates[i].text.strip(), "%Y年%m月%d日").strftime("%Y-%m-%d")
             draw_number = issues[i].text.strip()
-            main_number = str([int(d) for d in numbers[i].text.strip()])  # [6,1,1]形式
+            main_number = str([int(d) for d in numbers[i].text.strip()])
 
             base_index = i * 5
             def get_prize(j):
@@ -51,7 +62,7 @@ try:
                 except:
                     return None
 
-            data.append({
+            row = {
                 "回別": draw_number,
                 "抽せん日": draw_date,
                 "本数字": main_number,
@@ -60,16 +71,20 @@ try:
                 "セット(ストレート)": get_prize(2),
                 "セット(ボックス)": get_prize(3),
                 "ミニ": get_prize(4),
-            })
+            }
+
+            data.append(row)
+            log(f"[DATA] {row}")
 
         except Exception as e:
-            print(f"[WARNING] 回 {i+1} でエラー: {e}")
+            log(f"[WARNING] 回 {i+1} でエラー: {e}")
 
 finally:
     driver.quit()
+    log("[INFO] ブラウザ終了")
 
 # === 保存処理 ===
-csv_path = "numbers3.csv"  # プロジェクトルートに出力
+csv_path = "numbers3.csv"
 
 try:
     existing = pd.read_csv(csv_path)
@@ -89,13 +104,10 @@ if new_rows:
             writer.writeheader()
         writer.writerows(new_rows)
 
-# 並び替え（日付順）
-if new_rows:
+    # 並び替え
     df = pd.read_csv(csv_path)
     df.sort_values("抽せん日", inplace=True)
     df.to_csv(csv_path, index=False, encoding="utf-8")
-    print(f"[INFO] {len(new_rows)}件を保存し、日付順に並び替えました。")
-
-# 結果表示
-for row in new_rows:
-    print(row)
+    log(f"[INFO] {len(new_rows)}件を保存し、日付順に並び替えました。")
+else:
+    log("[INFO] 新規データはありませんでした。")
