@@ -1,4 +1,6 @@
 import streamlit as st
+st.set_page_config(page_title="Numbers3予測AI", layout="wide")  # ← 最上部に配置
+
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
@@ -30,7 +32,6 @@ def mark_prediction_done():
     with open(LOG_FILE, "w") as f:
         f.write(today_str)
 
-# ログ表示用（スクレイピングログ）
 def display_scraping_log():
     if os.path.exists(SCRAPING_LOG):
         with open(SCRAPING_LOG, "r", encoding="utf-8") as f:
@@ -64,8 +65,7 @@ if (
         except Exception as e:
             st.error(f"❌ 自動予測中にエラーが発生しました: {e}")
 
-# ========= ページ設定・UI =========
-st.set_page_config(page_title="Numbers3予測AI", layout="wide")
+# ========= ページUI =========
 st.markdown("<h1 style='color:#FF4B4B;'>🎯 Numbers3 予測AI</h1>", unsafe_allow_html=True)
 
 menu = st.sidebar.radio("📌 メニュー", [
