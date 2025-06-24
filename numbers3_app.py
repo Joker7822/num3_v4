@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
-import subprocess  # 🔧 追加
+import subprocess
 from datetime import datetime, time
 from numbers3_predictor import (
     main_with_improved_predictions,
@@ -11,6 +11,7 @@ from numbers3_predictor import (
 
 # ========= 自動予測実行のチェック =========
 LOG_FILE = "last_prediction_log.txt"
+SCRAPING_LOG = "scraping_log.txt"
 
 def already_predicted_today():
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -25,25 +26,43 @@ def mark_prediction_done():
     with open(LOG_FILE, "w") as f:
         f.write(today_str)
 
+# ログ表示用（スクレイピングログ）
+def display_scraping_log():
+    if os.path.exists(SCRAPING_LOG):
+        with open(SCRAPING_LOG, "r", encoding="utf-8") as f:
+            log_content = f.read()
+        st.markdown("### 🪵 スクレイピングログ")
+        st.text_area("Log Output", log_content, height=300)
+
+# ========= 自動実行エリア =========
 now = datetime.now()
 if (
-    now.weekday() < 5 and             # 月〜金
-    now.time() >= time(21, 0) and     # 21:00以降
+    now.weekday() < 5 and
+    now.time() >= time(21, 0) and
     not already_predicted_today()
 ):
     with st.spinner("⏳ 平日21:00を過ぎたため、自動で予測を実行しています..."):
         try:
-            # 🔽 scrapingnumbers3.py を事前に実行
+            # 既存ログをクリア
+            if os.path.exists(SCRAPING_LOG):
+                os.remove(SCRAPING_LOG)
+
+            # スクレイピング
             subprocess.run(["python", "scrapingnumbers3.py"], check=True)
 
-            # 🔽 予測処理を実行
+            # 予測実行
             main_with_improved_predictions()
 
-            # 🔽 実行完了ログ
+            # 実行完了記録
             mark_prediction_done()
             st.success("✅ 本日の自動予測が完了しました")
+
+            # ログ表示
+            display_scraping_log()
+
         except subprocess.CalledProcessError as e:
             st.error(f"❌ データ収集中にエラーが発生しました: {e}")
+            display_scraping_log()
         except Exception as e:
             st.error(f"❌ 自動予測中にエラーが発生しました: {e}")
 
