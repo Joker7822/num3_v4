@@ -1792,8 +1792,6 @@ def force_one_straight(predictions, reference_numbers_list):
     return predictions
 
 def main_with_improved_predictions():
-
-    # === データ読み込み ===
     try:
         df = pd.read_csv("numbers3.csv")
         df["本数字"] = df["本数字"].apply(parse_number_string)
@@ -1811,14 +1809,7 @@ def main_with_improved_predictions():
     latest_drawing_date = calculate_next_draw_date()
     print("最新の抽せん日:", latest_drawing_date)
 
-    # === 各モデルによる予測 ===
-    all_groups = {
-        "PPO": ppo_multiagent_predict(historical_data),
-        "Diffusion": diffusion_generate_predictions(historical_data, 5),
-        "Transformer": transformer_generate_predictions(historical_data),
-    }
-
-    # === GPT モデル読込 or 再学習 ===
+    # === GPTモデルのロードまたは学習 ===
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     gpt_model_path = "gpt3numbers.pth"
     encoder_path = "memory_encoder_3.pth"
@@ -1832,32 +1823,57 @@ def main_with_improved_predictions():
         decoder.load_state_dict(torch.load(gpt_model_path, map_location=device))
         encoder.load_state_dict(torch.load(encoder_path, map_location=device))
         print("[INFO] GPT3Numbers モデルを読み込みました")
+    decoder.eval()
+    encoder.eval()
 
+    # === メタ分類器の準備 ===
+    meta_clf = None
+    try:
+        eval_df = pd.read_csv("evaluation_result.csv")
+        meta_clf = retrain_meta_classifier(eval_df)
+    except Exception as e:
+        print(f"[WARNING] メタ分類器の読み込みに失敗しました: {e}")
+
+    # === モデル予測 ===
     sequences = historical_data["本数字"].tolist()
-    all_groups["GPT"] = gpt_generate_predictions_with_memory_3(
-        decoder, encoder, sequences, num_samples=5)
+    all_groups = {
+        "PPO": ppo_multiagent_predict(historical_data),
+        "Diffusion": diffusion_generate_predictions(historical_data, 5),
+        "Transformer": transformer_generate_predictions(historical_data),
+        "GPT": gpt_generate_predictions_with_memory_3(
+            decoder, encoder, sequences, num_samples=5)
+    }
 
-    # === 予測統合・補正・フィルタリング ===
     all_predictions = []
     for preds in all_groups.values():
         all_predictions.extend(preds)
 
-    # ★ 並び順をランダムに変換（ストレート狙い）
+    # 並び順ランダム化
     all_predictions = randomly_shuffle_predictions(all_predictions)
 
-    # ★ 強制的に1件ストレート構成を追加
-    true_numbers = df["本数字"].tolist()
-    all_predictions = force_one_straight(all_predictions, true_numbers)
+    # 強制1件ストレート（最新実績から）
+    true_numbers = parse_number_string(historical_data.iloc[-1]["本数字"])
+    all_predictions = force_one_straight(all_predictions, [true_numbers])
 
+    # 等級構成保証・多様性補完
     all_predictions = enforce_grade_structure(all_predictions)
     all_predictions = add_random_diversity(all_predictions)
+
+    # 信頼度補正（周期スコア使用）
     cycle_score = calculate_number_cycle_score(historical_data)
     all_predictions = apply_confidence_adjustment(all_predictions, cycle_score)
 
-    # ★ フィルタ処理（verify_predictions）
-    verified = verify_predictions(all_predictions, historical_data)
+    # メタ分類器によるフィルタリング
+    if meta_clf:
+        all_predictions = filter_by_meta_score(all_predictions, meta_clf)
 
-    # === 結果保存 ===
+    # 最終選別
+    verified = verify_predictions(all_predictions, historical_data)
+    if not verified:
+        print("[WARNING] 有効な予測が見つかりませんでした。")
+        return
+
+    # === 保存処理 ===
     result = {"抽せん日": latest_drawing_date}
     for i, (numbers, conf) in enumerate(verified[:5]):
         result[f"予測{i+1}"] = ",".join(map(str, numbers))
@@ -1880,7 +1896,6 @@ def main_with_improved_predictions():
     pred_df.to_csv(pred_path, index=False, encoding='utf-8-sig')
     print(f"[INFO] 最新予測（{latest_drawing_date}）を {pred_path} に保存しました")
 
-    # === 精度評価 ===
     try:
         evaluate_and_summarize_predictions(
             pred_file=pred_path,
