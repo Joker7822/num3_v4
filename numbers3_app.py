@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+import subprocess  # 🔧 追加
 from datetime import datetime, time
 from numbers3_predictor import (
     main_with_improved_predictions,
@@ -32,9 +33,17 @@ if (
 ):
     with st.spinner("⏳ 平日21:00を過ぎたため、自動で予測を実行しています..."):
         try:
+            # 🔽 scrapingnumbers3.py を事前に実行
+            subprocess.run(["python", "scrapingnumbers3.py"], check=True)
+
+            # 🔽 予測処理を実行
             main_with_improved_predictions()
+
+            # 🔽 実行完了ログ
             mark_prediction_done()
             st.success("✅ 本日の自動予測が完了しました")
+        except subprocess.CalledProcessError as e:
+            st.error(f"❌ データ収集中にエラーが発生しました: {e}")
         except Exception as e:
             st.error(f"❌ 自動予測中にエラーが発生しました: {e}")
 
