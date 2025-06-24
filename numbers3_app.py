@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import os
 import subprocess
 from datetime import datetime, time
+from zoneinfo import ZoneInfo  # ✅ JST対応
 from numbers3_predictor import (
     main_with_improved_predictions,
     evaluate_and_summarize_predictions
@@ -13,8 +14,11 @@ from numbers3_predictor import (
 LOG_FILE = "last_prediction_log.txt"
 SCRAPING_LOG = "scraping_log.txt"
 
+def now_jst():
+    return datetime.now(ZoneInfo("Asia/Tokyo"))
+
 def already_predicted_today():
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = now_jst().strftime("%Y-%m-%d")
     if os.path.exists(LOG_FILE):
         with open(LOG_FILE, "r") as f:
             last_run = f.read().strip()
@@ -22,7 +26,7 @@ def already_predicted_today():
     return False
 
 def mark_prediction_done():
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = now_jst().strftime("%Y-%m-%d")
     with open(LOG_FILE, "w") as f:
         f.write(today_str)
 
@@ -35,29 +39,23 @@ def display_scraping_log():
         st.text_area("Log Output", log_content, height=300)
 
 # ========= 自動実行エリア =========
-now = datetime.now()
+now = now_jst()
+st.write(f"🕒 現在の日本時間: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+
 if (
     now.weekday() < 5 and
     now.time() >= time(20, 0) and
     not already_predicted_today()
 ):
-    with st.spinner("⏳ 平日21:00を過ぎたため、自動で予測を実行しています..."):
+    with st.spinner("⏳ 平日20:00を過ぎたため、自動で予測を実行しています..."):
         try:
-            # 既存ログをクリア
             if os.path.exists(SCRAPING_LOG):
                 os.remove(SCRAPING_LOG)
 
-            # スクレイピング
             subprocess.run(["python", "scrapingnumbers3.py"], check=True)
-
-            # 予測実行
             main_with_improved_predictions()
-
-            # 実行完了記録
             mark_prediction_done()
             st.success("✅ 本日の自動予測が完了しました")
-
-            # ログ表示
             display_scraping_log()
 
         except subprocess.CalledProcessError as e:
@@ -86,16 +84,14 @@ if "最新予測" in menu:
                 pred_df = pd.read_csv("Numbers3_predictions.csv")
                 latest_row = pred_df.sort_values("抽せん日", ascending=False).iloc[0]
 
-                st.success(f"✅ 最新予測が取得されました")
-
+                st.success("✅ 最新予測が取得されました")
                 st.markdown(f"""
                     <div style='padding: 1.5rem; background-color: #f0f8ff; border-radius: 10px; text-align: center;'>
                         <h2 style='color:#4B9CD3;'>📅 抽せん日: {latest_row['抽せん日']}</h2>
-                        <p style='font-size: 2.8rem; color: #FF4B4B; margin: 0.5em 0;'>🎯 <strong>予測:</strong> {latest_row['予測2']}</p>
-                        <p style='font-size: 2.4rem; color: #00aa88; margin: 0.5em 0;'>💡 <strong>予測:</strong> {latest_row['予測1']}</p>
+                        <p style='font-size: 2.8rem; color: #FF4B4B;'>🎯 <strong>予測:</strong> {latest_row['予測2']}</p>
+                        <p style='font-size: 2.4rem; color: #00aa88;'>💡 <strong>予測:</strong> {latest_row['予測1']}</p>
                     </div>
                 """, unsafe_allow_html=True)
-
             except Exception as e:
                 st.error(f"❌ ファイルの読み込み中にエラーが発生しました: {e}")
         else:
