@@ -51,9 +51,6 @@ if (
 ):
     with st.spinner("⏳ 平日20:00を過ぎたため、自動予測チェック中..."):
         try:
-            # subprocess.run(["python", "scrapingnumbers3.py"], check=True)  ← Cloudでは不可
-            st.warning("⚠️ 自動スクレイピングはこの環境では実行されません。")
-            st.info("💡 最新の `numbers3.csv` をローカルで更新し、GitHubに push してください。")
 
             main_with_improved_predictions()
             mark_prediction_done()
