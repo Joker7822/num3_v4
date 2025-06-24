@@ -17,3 +17,4 @@ neuralforecast
 onnxruntime
 autogluon
 selenium==4.21.0
+requests
