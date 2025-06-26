@@ -1869,6 +1869,16 @@ def main_with_improved_predictions():
     cycle_score = calculate_number_cycle_score(historical_data)
     all_predictions = apply_confidence_adjustment(all_predictions, cycle_score)
 
+    # === メタ分類器によるフィルタリングの追加 ===
+    meta_clf = None
+    try:
+        eval_df = pd.read_csv("evaluation_result.csv")
+        meta_clf = retrain_meta_classifier(eval_df)
+        all_predictions = filter_by_meta_score(all_predictions, meta_clf)
+        print("[INFO] メタ分類器によるフィルタリングを適用しました")
+    except Exception as e:
+        print(f"[WARNING] メタ分類器の読み込みに失敗しました: {e}")
+
     verified = verify_predictions(all_predictions, historical_data)
 
     # === 結果保存 ===
