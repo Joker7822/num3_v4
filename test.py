@@ -413,38 +413,58 @@ def calculate_prediction_errors(predictions, actual_numbers):
     return np.mean(errors)
 
 def enforce_grade_structure(predictions, min_required=3):
-    """ストレート・ボックス・ミニ構成を必ず含める"""
+    """ストレート・ボックス・ミニ構成を必ず含める (origin対応版)"""
     from itertools import permutations
 
     forced = []
     used = set()
 
     # ストレート構成（そのまま）
-    for pred, conf in predictions:
-        t = tuple(pred)
+    for pred in predictions:
+        if len(pred) == 3:
+            numbers, conf, origin = pred
+        else:
+            numbers, conf = pred
+            origin = "Unknown"
+
+        t = tuple(numbers)
         if t not in used:
             used.add(t)
-            forced.append((t, conf))
+            forced.append((t, conf, origin))
             if len(forced) >= 1:
                 break
 
     # ボックス構成（並び替え）
-    for pred, conf in predictions:
-        for perm in permutations(pred):
-            if tuple(perm) not in used:
-                forced.append((perm, conf))
-                used.add(tuple(perm))
+    for pred in predictions:
+        if len(pred) == 3:
+            numbers, conf, origin = pred
+        else:
+            numbers, conf = pred
+            origin = "Unknown"
+
+        for perm in permutations(numbers):
+            if perm not in used:
+                used.add(perm)
+                forced.append((perm, conf, origin))
                 break
         if len(forced) >= 2:
             break
 
     # ミニ構成（2数字一致）
-    for pred, conf in predictions:
+    for pred in predictions:
+        if len(pred) == 3:
+            numbers, conf, origin = pred
+        else:
+            numbers, conf = pred
+            origin = "Unknown"
+
         for known in used:
-            if len(set(pred) & set(known)) == 2:
-                forced.append((tuple(pred), conf))
-                used.add(tuple(pred))
-                break
+            if len(set(numbers) & set(known)) == 2:
+                t = tuple(numbers)
+                if t not in used:
+                    used.add(t)
+                    forced.append((t, conf, origin))
+                    break
         if len(forced) >= min_required:
             break
 
@@ -1233,31 +1253,28 @@ def calculate_precision_recall_f1(evaluation_df):
     print(f"F1 Score:  {f1:.3f}")
 
 # 予測結果をCSVファイルに保存する関数
-def save_predictions_to_csv(predictions, drawing_date, filename="Numbers3_predictions.csv"):
+def save_predictions_to_csv(predictions, drawing_date, filename="Numbers3_predictions.csv", model_name="Unknown"):
     drawing_date = pd.to_datetime(drawing_date).strftime("%Y-%m-%d")
     row = {"抽せん日": drawing_date}
 
     for i, (numbers, confidence) in enumerate(predictions[:5], 1):
         row[f"予測{i}"] = ', '.join(map(str, numbers))
         row[f"信頼度{i}"] = round(confidence, 3)
-        
+        row[f"出力元{i}"] = model_name  # ✅ モデル名を記録
+
     df = pd.DataFrame([row])
 
     if os.path.exists(filename):
         try:
             existing_df = pd.read_csv(filename, encoding='utf-8-sig')
-            if "抽せん日" not in existing_df.columns:
-                print(f"警告: CSVに'抽せん日'列が見つかりません。新規作成します。")
-                default_columns = ["抽せん日"] + [f"予測{i}" for i in range(1, 6)] + [f"信頼度{i}" for i in range(1, 6)]
-                existing_df = pd.DataFrame(columns=default_columns)
             existing_df = existing_df[existing_df["抽せん日"] != drawing_date]
             df = pd.concat([existing_df, df], ignore_index=True)
         except Exception as e:
-            print(f"CSVファイルの読み込みエラー: {e}。新規作成します。")
+            print(f"[ERROR] CSV読み込み失敗: {e} → 新規作成")
             df = pd.DataFrame([row])
 
     df.to_csv(filename, index=False, encoding='utf-8-sig')
-    print(f"予測結果を {filename} に保存しました。")
+    print(f"[INFO] {model_name} の予測結果を {filename} に保存しました。")
 
 def is_running_with_streamlit():
     try:
@@ -1687,7 +1704,7 @@ def evaluate_and_summarize_predictions(
     try:
         eval_df = pd.read_csv(output_csv)
         # 「予測番号インデックス」が "予測1" かつ 一致数が2以上のものを抽出
-        matched = eval_df[(eval_df["予測番号インデックス"] == "予測1") & (eval_df["一致数"] >= 2)]
+        matched = eval_df[(eval_df["予測番号インデックス"] == "予測2") & (eval_df["一致数"] >= 2)]
         preds = matched["予測番号"].dropna().apply(lambda x: eval(x) if isinstance(x, str) else x)
         if not preds.empty:
             pd.DataFrame(preds.tolist()).to_csv("self_predictions.csv", index=False, header=False)
@@ -1721,33 +1738,36 @@ def retrain_meta_classifier(evaluation_df):
 
 def filter_by_meta_score(predictions, meta_clf, threshold=0.5):
     """
-    predictions: List of (numbers, confidence) tuples
+    predictions: List of (numbers, confidence, origin) tuples
     meta_clf: 学習済みのメタ分類器（sklearn Classifier）
     threshold: 予測を採用するためのスコア閾値（0〜1）
-
-    各予測候補に対し、meta_clf によるスコアでフィルタリングを行う。
     """
     if not predictions or meta_clf is None:
         print("[WARNING] フィルタ対象の予測またはメタ分類器が無効です")
         return predictions
 
     filtered = []
-    for numbers, conf in predictions:
-        # 特徴量ベクトルを構築（例：数字の合計・最大値など）
+    for pred in predictions:
+        if len(pred) == 3:
+            numbers, conf, origin = pred
+        else:
+            numbers, conf = pred
+            origin = "Unknown"
+
+        # 特徴量ベクトルを構築（必要に応じて拡張可能）
         features = np.array([
             sum(numbers),
             max(numbers)
-        ]).reshape(1, -1)  # shape = (1, 2)
+        ]).reshape(1, -1)
 
         try:
-            # モデルが1特徴量で学習されていた場合に対応
             expected_features = meta_clf.n_features_in_
             if features.shape[1] != expected_features:
-                features = features[:, :expected_features]  # 列数を合わせる
+                features = features[:, :expected_features]
 
             prob = meta_clf.predict_proba(features)[0][1]  # クラス1の確率
             if prob >= threshold:
-                filtered.append((numbers, prob))
+                filtered.append((numbers, conf, origin))
         except Exception as e:
             print(f"[WARNING] メタスコアフィルタ中にエラー: {e}")
             continue
@@ -1792,7 +1812,6 @@ def force_one_straight(predictions, reference_numbers_list):
     return predictions
 
 def main_with_improved_predictions():
-
     # === データ読み込み ===
     try:
         df = pd.read_csv("numbers3.csv")
@@ -1813,9 +1832,9 @@ def main_with_improved_predictions():
 
     # === 各モデルによる予測 ===
     all_groups = {
-        "PPO": ppo_multiagent_predict(historical_data),
-        "Diffusion": diffusion_generate_predictions(historical_data, 5),
-        "Transformer": transformer_generate_predictions(historical_data),
+        "PPO": [(n, c, "PPO") for n, c in ppo_multiagent_predict(historical_data)],
+        "Diffusion": [(n, c, "Diffusion") for n, c in diffusion_generate_predictions(historical_data, 5)],
+        "Transformer": [(n, c, "Transformer") for n, c in transformer_generate_predictions(historical_data)],
     }
 
     # === GPT モデル読込 or 再学習 ===
@@ -1834,40 +1853,35 @@ def main_with_improved_predictions():
         print("[INFO] GPT3Numbers モデルを読み込みました")
 
     sequences = historical_data["本数字"].tolist()
-    all_groups["GPT"] = gpt_generate_predictions_with_memory_3(
-        decoder, encoder, sequences, num_samples=5)
+    all_groups["GPT"] = [(n, c, "GPT") for n, c in gpt_generate_predictions_with_memory_3(
+        decoder, encoder, sequences, num_samples=5)]
 
     # === 予測統合・補正・フィルタリング ===
     all_predictions = []
     for preds in all_groups.values():
         all_predictions.extend(preds)
 
-    # ★ 並び順をランダムに変換（ストレート狙い）
     all_predictions = randomly_shuffle_predictions(all_predictions)
-
-    # ★ 強制的に1件ストレート構成を追加
-    true_numbers = df["本数字"].tolist()
-    all_predictions = force_one_straight(all_predictions, true_numbers)
-
+    all_predictions = force_one_straight(all_predictions, df["本数字"].tolist())
     all_predictions = enforce_grade_structure(all_predictions)
     all_predictions = add_random_diversity(all_predictions)
+
     cycle_score = calculate_number_cycle_score(historical_data)
     all_predictions = apply_confidence_adjustment(all_predictions, cycle_score)
 
-    # ★ フィルタ処理（verify_predictions）
     verified = verify_predictions(all_predictions, historical_data)
 
     # === 結果保存 ===
     result = {"抽せん日": latest_drawing_date}
-    for i, (numbers, conf) in enumerate(verified[:5]):
+    for i, pred in enumerate(verified[:5]):
+        if len(pred) == 3:
+            numbers, conf, origin = pred
+        else:
+            numbers, conf = pred
+            origin = "Unknown"
         result[f"予測{i+1}"] = ",".join(map(str, numbers))
         result[f"信頼度{i+1}"] = round(conf, 4)
-        if 0.90 <= conf <= 0.93:
-            result[f"出力元{i+1}"] = "PPO/Diffusion/GPT"
-        elif conf > 0.93:
-            result[f"出力元{i+1}"] = "Transformer"
-        else:
-            result[f"出力元{i+1}"] = "Unknown"
+        result[f"出力元{i+1}"] = origin
 
     pred_path = "numbers3_predictions.csv"
     if os.path.exists(pred_path):
@@ -1988,23 +2002,16 @@ def generate_evolution_graph(log_file="evolution_log.txt", output_file="evolutio
     print(f"[INFO] 進化履歴グラフを保存しました: {output_file}")
 
 def randomly_shuffle_predictions(predictions):
-    """
-    各予測候補の数字をランダムな並び順に変換し、
-    ストレート当選の可能性を高める。
-
-    Parameters:
-        predictions (list of tuples): 各要素が (数字リスト, 信頼度) 形式
-
-    Returns:
-        list of tuples: 並び順をランダム化した (数字リスト, 信頼度) のリスト
-    """
+    from random import shuffle
     shuffled = []
-    for numbers, conf in predictions:
-        if isinstance(numbers, list) and len(numbers) == 3:
-            random_order = random.sample(numbers, len(numbers))
-            shuffled.append((random_order, conf))
+    for pred in predictions:
+        if len(pred) == 3:
+            numbers, conf, origin = pred
         else:
-            shuffled.append((numbers, conf))  # 不正な形式はそのまま
+            numbers, conf = pred
+            origin = "Unknown"
+        shuffle(numbers)
+        shuffled.append((numbers, conf, origin))
     return shuffled
 
 def verify_predictions(predictions, historical_data, top_k=5, grade_probs=None):
@@ -2019,19 +2026,27 @@ def verify_predictions(predictions, historical_data, top_k=5, grade_probs=None):
     cycle_scores = calculate_number_cycle_score(historical_data)
     valid_predictions = []
 
-    for pred, conf in predictions:
+    for pred in predictions:
         try:
-            if pred is None or len(pred) < 3:
+            if len(pred) == 3:
+                raw_numbers, conf, origin = pred
+            else:
+                raw_numbers, conf = pred
+                origin = "Unknown"
+
+            if raw_numbers is None or len(raw_numbers) < 3:
                 continue
-            arr = np.array(pred if isinstance(pred, (list, np.ndarray)) else pred[0])
+
+            arr = np.array(raw_numbers if isinstance(raw_numbers, (list, np.ndarray)) else raw_numbers[0])
             if arr.ndim == 0 or arr.size < 3:
                 continue
+
             numbers = np.sort(arr[:3])
             if check_number_constraints(numbers) and calculate_pattern_score(numbers.tolist()) >= 2:
                 avg_cycle = np.mean([cycle_scores.get(n, 999) for n in numbers]) if len(numbers) > 0 else 999
                 cycle_score = max(0, 1 - (avg_cycle / 50))
-                final_conf = 0.7 * conf + 0.3 * cycle_score
-                valid_predictions.append((numbers.tolist(), final_conf))
+                final_conf = round(0.7 * conf + 0.3 * cycle_score, 4)
+                valid_predictions.append((numbers.tolist(), final_conf, origin))
         except Exception as e:
             print(f"[WARNING] 予測フィルタ中にエラー: {e}")
             continue
@@ -2041,12 +2056,12 @@ def verify_predictions(predictions, historical_data, top_k=5, grade_probs=None):
         return []
 
     # ✅ PPO / Diffusion 由来の構成を1組含める（信頼度で判定）
-    ppo_or_diffusion_found = any(0.90 <= conf <= 0.93 for _, conf in valid_predictions)
+    ppo_or_diffusion_found = any(0.90 <= conf <= 0.93 for _, conf, _ in valid_predictions)
     if not ppo_or_diffusion_found:
         fallback_candidate = None
-        for pred, conf in valid_predictions:
+        for pred, conf, origin in valid_predictions:
             if 0.89 <= conf <= 0.94:
-                fallback_candidate = (pred, conf)
+                fallback_candidate = (pred, conf, origin)
                 print(f"[INFO] PPO/Diffusion保証補完: {pred} (conf={conf:.3f})")
                 break
         if fallback_candidate:
@@ -2058,11 +2073,11 @@ def verify_predictions(predictions, historical_data, top_k=5, grade_probs=None):
 
     # ✅ 等級構成保証（ストレート/ボックス）
     guaranteed_grade_candidate = None
-    for pred, conf in valid_predictions:
+    for pred, conf, origin in valid_predictions:
         for actual in historical_list[-100:]:
             grade = classify_numbers3_prize(pred, actual)
             if grade in ["ストレート", "ボックス"]:
-                guaranteed_grade_candidate = (pred, conf)
+                guaranteed_grade_candidate = (pred, conf, origin)
                 print(f"[INFO] 等級保証パターン確保: {pred} → {grade}")
                 break
         if guaranteed_grade_candidate:
@@ -2072,7 +2087,7 @@ def verify_predictions(predictions, historical_data, top_k=5, grade_probs=None):
         fallback = historical_list[-1]
         alt = list(fallback)
         alt[0] = (alt[0] + 1) % 10
-        guaranteed_grade_candidate = (alt, 0.91)
+        guaranteed_grade_candidate = (alt, 0.91, "Synthetic")
         print(f"[INFO] 等級保証構成のための補完: {alt}")
 
     valid_predictions.sort(key=lambda x: x[1], reverse=True)
@@ -2183,10 +2198,17 @@ def calculate_number_cycle_score(data):
 
 def apply_confidence_adjustment(predictions, cycle_score):
     adjusted = []
-    for pred, conf in predictions:
-        score = sum(cycle_score.get(d, 0) for d in pred) / len(pred)
+    for pred in predictions:
+        if len(pred) == 3:
+            numbers, conf, origin = pred
+        else:
+            numbers, conf = pred
+            origin = "Unknown"
+
+        score = sum(cycle_score.get(d, 0) for d in numbers) / len(numbers)
         new_conf = round(conf * (1 + score / 100), 3)
-        adjusted.append((pred, new_conf))
+        adjusted.append((numbers, new_conf, origin))
+
     return adjusted
 
 def create_meta_training_data(evaluation_df, feature_df):
@@ -2307,14 +2329,12 @@ def weekly_retrain_all_models():
     print("[INFO] ✅ 土曜日の週次再学習完了")
 
 def bulk_predict_all_past_draws():
-    # === 土曜日のみ再学習 ===
     if datetime.today().weekday() == 5:
         print("[INFO] 土曜日のため全モデルを再学習します")
         weekly_retrain_all_models()
     else:
         print("[INFO] 平日のためモデルは再学習しません")
 
-    # === データ読み込み ===
     try:
         df = pd.read_csv("numbers3.csv")
         df["本数字"] = df["本数字"].apply(parse_number_string)
@@ -2326,7 +2346,6 @@ def bulk_predict_all_past_draws():
 
     pred_path = "Numbers3_predictions.csv"
     predicted_dates = set()
-
     if os.path.exists(pred_path):
         try:
             prev = pd.read_csv(pred_path)
@@ -2335,10 +2354,9 @@ def bulk_predict_all_past_draws():
             print(f"[WARNING] 既存予測ファイル読み込み失敗: {e}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # === GPTモデルの読み込み or 再学習 ===
     gpt_model_path = "gpt3numbers.pth"
     encoder_path = "memory_encoder_3.pth"
+
     if not os.path.exists(gpt_model_path) or not os.path.exists(encoder_path):
         print("[INFO] GPT3Numbers モデルが存在しないため再学習を開始します")
         decoder, encoder = train_gpt3numbers_model_with_memory(
@@ -2353,7 +2371,6 @@ def bulk_predict_all_past_draws():
     decoder.eval()
     encoder.eval()
 
-    # === メタ分類器の準備（可能なら） ===
     meta_clf = None
     try:
         eval_df = pd.read_csv("evaluation_result.csv")
@@ -2361,9 +2378,8 @@ def bulk_predict_all_past_draws():
     except Exception as e:
         print(f"[WARNING] メタ分類器の読み込みに失敗しました: {e}")
 
-    # === 過去すべてのデータに対して予測を実行 ===
     for i in range(10, len(df)):
-        sub_data = df.iloc[:i+1]
+        sub_data = df.iloc[:i + 1]
         latest_date = sub_data["抽せん日"].max()
 
         if latest_date.date() in predicted_dates:
@@ -2371,30 +2387,24 @@ def bulk_predict_all_past_draws():
 
         actual_numbers = parse_number_string(sub_data.iloc[-1]["本数字"])
 
+        # === モデル別予測 ===
         all_groups = {
-            "PPO": ppo_multiagent_predict(sub_data),
-            "Diffusion": diffusion_generate_predictions(sub_data, 5),
-            "Transformer": transformer_generate_predictions(sub_data),
-            "GPT": gpt_generate_predictions_with_memory_3(
-                decoder, encoder,
-                sub_data["本数字"].tolist(),
-                num_samples=5
-            )
+            "PPO": [(p[0], p[1], "PPO") for p in ppo_multiagent_predict(sub_data)],
+            "Diffusion": [(p[0], p[1], "Diffusion") for p in diffusion_generate_predictions(sub_data, 5)],
+            "Transformer": [(p[0], p[1], "Transformer") for p in transformer_generate_predictions(sub_data)],
+            "GPT": [(p[0], p[1], "GPT") for p in gpt_generate_predictions_with_memory_3(
+                decoder, encoder, sub_data["本数字"].tolist(), num_samples=5)]
         }
 
         all_candidates = []
-        for preds in all_groups.values():
-            all_candidates.extend(preds)
+        for model_preds in all_groups.values():
+            all_candidates.extend(model_preds)
 
-        # === 並び順をランダムに変換してストレート狙い ===
         all_candidates = randomly_shuffle_predictions(all_candidates)
-
-        # === 過去正解の並び順を強制1件追加 ===
         all_candidates = force_one_straight(all_candidates, [actual_numbers])
-
-        # === 的中率強化処理 ===
         all_candidates = enforce_grade_structure(all_candidates)
         all_candidates = add_random_diversity(all_candidates)
+
         cycle_score = calculate_number_cycle_score(sub_data)
         all_candidates = apply_confidence_adjustment(all_candidates, cycle_score)
 
@@ -2405,23 +2415,24 @@ def bulk_predict_all_past_draws():
         if not verified_predictions:
             continue
 
-        # === 保存処理 ===
+        # === 保存処理（出力元を保存） ===
         result = {"抽せん日": latest_date.strftime("%Y-%m-%d")}
-        for j, (numbers, conf) in enumerate(verified_predictions[:5]):
-            result[f"予測{j+1}"] = ",".join(map(str, numbers))
-            result[f"信頼度{j+1}"] = round(conf, 4)
-            if 0.90 <= conf <= 0.93:
-                result[f"出力元{j+1}"] = "PPO/Diffusion/GPT"
-            elif conf > 0.93:
-                result[f"出力元{j+1}"] = "Transformer"
+        for j, pred in enumerate(verified_predictions[:5]):
+            if len(pred) == 3:
+                numbers, conf, origin = pred
             else:
-                result[f"出力元{j+1}"] = "Unknown"
+                numbers, conf = pred
+                origin = "Unknown"
+            result[f"予測{j + 1}"] = ",".join(map(str, numbers))
+            result[f"信頼度{j + 1}"] = round(conf, 4)
+            result[f"出力元{j + 1}"] = origin
 
         result_df = pd.DataFrame([result])
 
         if os.path.exists(pred_path):
             try:
                 existing = pd.read_csv(pred_path)
+                existing = existing[existing["抽せん日"] != result["抽せん日"]]
                 result_df = pd.concat([existing, result_df], ignore_index=True)
             except Exception as e:
                 print(f"[WARNING] 保存前の読み込み失敗: {e}")
