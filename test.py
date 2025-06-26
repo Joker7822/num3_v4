@@ -2415,15 +2415,15 @@ def bulk_predict_all_past_draws():
         print(f"[WARNING] メタ分類器の読み込みに失敗しました: {e}")
 
     for i in range(10, len(df)):
-        sub_data = df.iloc[:i + 1]
-        latest_date = sub_data["抽せん日"].max()
+        sub_data = df.iloc[:i]  # 未来データ除外
+        latest_row = df.iloc[i]
+        latest_date = latest_row["抽せん日"]
 
         if latest_date.date() in predicted_dates:
             continue
 
-        actual_numbers = parse_number_string(sub_data.iloc[-1]["本数字"])
+        actual_numbers = parse_number_string(latest_row["本数字"])
 
-        # === モデル別予測 ===
         all_groups = {
             "PPO": [(p[0], p[1], "PPO") for p in ppo_multiagent_predict(sub_data)],
             "Diffusion": [(p[0], p[1], "Diffusion") for p in diffusion_generate_predictions(sub_data, 5)],
@@ -2451,7 +2451,6 @@ def bulk_predict_all_past_draws():
         if not verified_predictions:
             continue
 
-        # === 保存処理（出力元を保存） ===
         result = {"抽せん日": latest_date.strftime("%Y-%m-%d")}
         for j, pred in enumerate(verified_predictions[:5]):
             if len(pred) == 3:
