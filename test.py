@@ -1208,6 +1208,11 @@ def calculate_next_draw_date(csv_path="numbers3.csv"):
         df["抽せん日"] = pd.to_datetime(df["抽せん日"], errors='coerce')
         latest_date = df["抽せん日"].max()
         next_date = latest_date + timedelta(days=1)
+
+        # 土曜(5)または日曜(6)の場合、次の月曜に調整
+        while next_date.weekday() in [5, 6]:
+            next_date += timedelta(days=1)
+
         return next_date.strftime("%Y-%m-%d")
     except Exception as e:
         print(f"[WARNING] 日付取得エラー: {e}")
@@ -1568,7 +1573,7 @@ def transformer_generate_predictions(df, model_path="transformer_model.pth"):
         return [(prediction, 0.95)]
 
 def evaluate_and_summarize_predictions(
-    pred_file="numbers3_predictions.csv",
+    pred_file="Numbers3_predictions.csv",
     actual_file="numbers3.csv",
     output_csv="evaluation_result.csv",
     output_txt="evaluation_summary.txt"
@@ -1920,7 +1925,8 @@ def main_with_improved_predictions():
         result[f"信頼度{i + 1}"] = round(conf, 4)
         result[f"出力元{i + 1}"] = origin
 
-    pred_path = "numbers3_predictions.csv"
+    pred_path = "Numbers3_predictions.csv"
+
     if os.path.exists(pred_path):
         pred_df = pd.read_csv(pred_path)
         pred_df = pred_df[pred_df["抽せん日"] != latest_drawing_date]
@@ -2520,6 +2526,6 @@ if __name__ == "__main__":
         train_transformer_with_cycle_attention(df, model_path="transformer_model.pth", epochs=50)
 
     # 🔁 一括予測を実行
-    bulk_predict_all_past_draws()
-    # main_with_improved_predictions()
+    # bulk_predict_all_past_draws()
+    main_with_improved_predictions()
     
