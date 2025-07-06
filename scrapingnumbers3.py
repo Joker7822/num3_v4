@@ -14,7 +14,11 @@ chrome_options = Options()
 chrome_options.add_argument("--headless")
 chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--disable-dev-shm-usage")
-driver = webdriver.Chrome(options=chrome_options)
+
+# chromedriver.exe を相対パスで指定（GitHubにアップロード済み想定）
+driver_path = os.path.join(os.getcwd(), "chromedriver.exe")
+chrome_service = Service(executable_path=driver_path)
+driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
 
 url = "https://www.mizuhobank.co.jp/takarakuji/check/numbers/numbers3/index.html"
 driver.get(url)
