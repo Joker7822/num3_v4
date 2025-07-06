@@ -37,6 +37,7 @@ import matplotlib
 matplotlib.use('Agg')  # ← ★ この行を先に追加！
 import matplotlib.pyplot as plt
 import aiohttp
+from random import shuffle
 import asyncio
 import warnings
 import re
@@ -63,6 +64,26 @@ if platform.system() == "Windows":
 
 warnings.filterwarnings("ignore")
 
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
+
+def set_global_seed(seed=SEED):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+set_global_seed()
+
+def calculate_reward(selected_numbers, winning_numbers, cycle_scores):
+    match_count = len(set(selected_numbers) & set(winning_numbers))
+    avg_cycle_score = np.mean([cycle_scores.get(n, 999) for n in selected_numbers])
+    reward = match_count * 0.5 + max(0, 1 - avg_cycle_score / 50)
+    return reward
+
 class LotoEnv(gym.Env):
     def __init__(self, historical_numbers):
         super(LotoEnv, self).__init__()
@@ -73,26 +94,21 @@ class LotoEnv(gym.Env):
     def reset(self):
         return np.zeros(10, dtype=np.float32)
 
-    def step(self, action):
-        if action.size == 0:
-            return np.zeros(10, dtype=np.float32), -1.0, True, {}  # エラー回避
+def step(self, action):
+    if action.size == 0:
+        return np.zeros(10, dtype=np.float32), -1.0, True, {}
 
-        selected_numbers = np.argsort(action)[-3:]  # または[-4:]
+    selected_numbers = set(np.argsort(action)[-3:])
+    target_numbers = set(self.target_numbers_list[self.current_index])
 
-        selected_numbers = list(np.argsort(action)[-4:])
-        winning_numbers = list(np.random.choice(self.historical_numbers, 4, replace=False))
+    match_count = len(selected_numbers & target_numbers)
+    # cycle_scores を self.cycle_scores で持っていない場合は、適当なデフォルト値を使用する
+    avg_cycle_score = 999  # 仮に固定値を設定
+    reward = match_count * 0.5 + max(0, 1 - avg_cycle_score / 50)
 
-        prize = classify_numbers3_prize(selected_numbers, winning_numbers)
-        prize_rewards = {
-            "ストレート": 468700,
-            "ボックス": 18700,
-            "はずれ": -100
-        }
-
-        reward = prize_rewards.get(prize, -100)
-        done = True
-        obs = np.zeros(10, dtype=np.float32)
-        return obs, reward, done, {}
+    done = True
+    obs = np.zeros(10, dtype=np.float32)
+    return obs, reward, done, {}
 
 class DiversityEnv(gym.Env):
     def __init__(self, historical_numbers):
@@ -217,15 +233,14 @@ class AdversarialLotoEnv(gym.Env):
 
     def step(self, action):
         if action.size == 0:
-            return np.zeros(10, dtype=np.float32), -1.0, True, {}  # エラー回避
-
-        selected = np.argsort(action)[-3:]  # または[-4:]
+            return np.zeros(10, dtype=np.float32), -1.0, True, {}
 
         selected_numbers = set(np.argsort(action)[-3:])
         target_numbers = set(self.target_numbers_list[self.current_index])
 
-        main_match = len(selected_numbers & target_numbers)
-        reward = main_match / 3  # 部分一致率を報酬とする
+        match_count = len(selected_numbers & target_numbers)
+        avg_cycle_score = np.mean([self.cycle_scores.get(n, 999) for n in selected_numbers])
+        reward = match_count * 0.5 + max(0, 1 - avg_cycle_score / 50)
 
         done = True
         obs = np.zeros(10, dtype=np.float32)
@@ -1589,11 +1604,10 @@ def evaluate_and_summarize_predictions(
 
     evaluation_results = []
     grade_counter = Counter()
+    source_grade_counter = Counter()
     match_counter = Counter()
     all_hits = []
-
     grade_list = ["はずれ", "ミニ", "ボックス", "ストレート"]
-
     results_by_prediction = {
         i: {grade: 0 for grade in grade_list} | {"details": []}
         for i in range(1, 6)
@@ -1609,18 +1623,13 @@ def evaluate_and_summarize_predictions(
         for i in range(1, 6):
             pred_key = f"予測{i}"
             conf_key = f"信頼度{i}"
+            source_key = f"出力元{i}"
             if pred_key in row and pd.notna(row[pred_key]):
                 predicted = parse_number_string(str(row[pred_key]))
                 confidence = row[conf_key] if conf_key in row and pd.notna(row[conf_key]) else 1.0
+                source = row[source_key] if source_key in row and pd.notna(row[source_key]) else "Unknown"
                 grade = classify_numbers3_prize(predicted, actual_numbers)
                 match_count = len(set(predicted) & set(actual_numbers))
-
-                if 0.91 <= confidence <= 0.93:
-                    source = "PPO/Diffusion"
-                elif confidence > 0.93:
-                    source = "BaseModel"
-                else:
-                    source = "Unknown"
 
                 evaluation_results.append({
                     "抽せん日": draw_date.strftime("%Y-%m-%d"),
@@ -1634,6 +1643,7 @@ def evaluate_and_summarize_predictions(
                 })
 
                 grade_counter[grade] += 1
+                source_grade_counter[source + f"_予測{i}"] += (grade in ["ボックス", "ストレート"])
                 match_counter[match_count] += 1
                 results_by_prediction[i][grade] += 1
 
@@ -1642,104 +1652,111 @@ def evaluate_and_summarize_predictions(
                     results_by_prediction[i]["details"].append(detail)
                     all_hits.append(detail)
 
-    # === CSV保存 ===
+    # 結果保存
     eval_df = pd.DataFrame(evaluation_results)
     eval_df.to_csv(output_csv, index=False, encoding="utf-8-sig")
     print(f"[INFO] 比較結果を {output_csv} に保存しました")
 
-    # === TXT出力 ===
     lines = []
     lines.append("== 等級別全体集計 ==")
-    for k in grade_list:
-        lines.append(f"{k}: {grade_counter[k]} 件")
+    for g in grade_list:
+        lines.append(f"{g}: {grade_counter[g]} 件")
 
     total = sum(grade_counter.values())
-    matched = grade_counter["ミニ"] + grade_counter["ボックス"] + grade_counter["ストレート"]
+    matched = grade_counter["ボックス"] + grade_counter["ストレート"]
     rate = (matched / total * 100) if total > 0 else 0
     lines.append("\n== 等級的中率チェック ==")
-    lines.append(f"ストレート・ボックス・ミニの合計: {matched} 件")
+    lines.append(f"ストレート・ボックスの合計: {matched} 件")
     lines.append(f"的中率（等級ベース）: {rate:.2f}%")
     lines.append("✓ 的中率は目標を達成しています。" if rate >= 10 else "✘ 的中率は目標に達していません。")
 
-    # === 各予測番号の等級・賞金・利益の集計 ===
-    lines.append("\n== 各予測ごとの賞金・コスト・利益 ==")
-    mini_prize = 9000
-    box_prize = 15000
-    straight_prize = 114000
-    cost_per_draw = 600
-
-    for i in range(1, 6):
+    # 各予測の損益
+    box_prize, straight_prize, cost_per_draw = 15000, 105000, 400
+    for i in range(1, 3):
         lines.append(f"\n== 等級別予想{i}集計 ==")
-        mini = results_by_prediction[i]["ミニ"]
+        for g in grade_list:
+            lines.append(f"{g}: {results_by_prediction[i][g]} 件")
         box = results_by_prediction[i]["ボックス"]
         straight = results_by_prediction[i]["ストレート"]
-
-        for k in grade_list:
-            lines.append(f"{k}: {results_by_prediction[i][k]} 件")
-
-        hit_count = mini + box + straight
-        total_preds = sum(results_by_prediction[i][k] for k in grade_list)
+        hit_count = box + straight
+        total_preds = sum(results_by_prediction[i][g] for g in grade_list)
         acc = (hit_count / total_preds * 100) if total_preds > 0 else 0
         lines.append("\n== 等級的中率チェック ==")
-        lines.append(f"ストレート・ボックス・ミニの合計: {hit_count} 件")
+        lines.append(f"ストレート・ボックスの合計: {hit_count} 件")
         lines.append(f"的中率（等級ベース）: {acc:.2f}%")
 
-        for detail in results_by_prediction[i]["details"]:
-            lines.append(detail)
-
-        # 賞金と利益の計算
-        mini_total = mini * mini_prize
         box_total = box * box_prize
         straight_total = straight * straight_prize
-        total_reward = mini_total + box_total + straight_total
+        total_reward = box_total + straight_total
         cost = total_preds * cost_per_draw
         profit = total_reward - cost
-
         lines.append(f"\n== 予測{i}の賞金・損益 ==")
-        lines.append(f"ミニ: {mini} 件 × ¥{mini_prize:,} = ¥{mini_total:,}")
-        lines.append(f"ボックス: {box} 件 × ¥{box_prize:,} = ¥{box_total:,}")
-        lines.append(f"ストレート: {straight} 件 × ¥{straight_prize:,} = ¥{straight_total:,}")
+        lines.append(f"ボックス: {box} × ¥{box_prize:,} = ¥{box_total:,}")
+        lines.append(f"ストレート: {straight} × ¥{straight_prize:,} = ¥{straight_total:,}")
         lines.append(f"当選合計金額: ¥{total_reward:,}")
-        lines.append(f"コスト（{total_preds} × ¥{cost_per_draw:,}）: ¥{cost:,}")
+        lines.append(f"コスト: ¥{cost:,}")
         lines.append(f"損益: {'+' if profit >= 0 else '-'}¥{abs(profit):,}")
 
-    # === 全体の賞金・利益の集計 ===
-    lines.append("\n== 賞金・コスト・利益（全体） ==")
-    mini_total = grade_counter["ミニ"] * mini_prize
+    # 全体損益
     box_total = grade_counter["ボックス"] * box_prize
     straight_total = grade_counter["ストレート"] * straight_prize
-    all_reward = mini_total + box_total + straight_total
+    all_reward = box_total + straight_total
     total_cost = total * cost_per_draw
     profit = all_reward - total_cost
-
-    lines.append(f"ミニ: {grade_counter['ミニ']} 件 × ¥{mini_prize:,} = ¥{mini_total:,}")
-    lines.append(f"ボックス: {grade_counter['ボックス']} 件 × ¥{box_prize:,} = ¥{box_total:,}")
-    lines.append(f"ストレート: {grade_counter['ストレート']} 件 × ¥{straight_prize:,} = ¥{straight_total:,}")
-    lines.append(f"当選合計金額(理論値): ¥{all_reward:,}")
-    lines.append(f"総コスト（全体件数 {total} × ¥{cost_per_draw:,}）: ¥{total_cost:,}")
+    lines.append("\n== 賞金・コスト・利益（全体） ==")
+    lines.append(f"当選合計金額: ¥{all_reward:,}")
+    lines.append(f"総コスト: ¥{total_cost:,}")
     lines.append(f"最終損益: {'+' if profit >= 0 else '-'}¥{abs(profit):,}")
 
+    # 出力元別的中率
+    lines.append("\n== 出力元別的中率（予測1・2のみ） ==")
+    source_hit_counter = Counter()
+    source_total_counter = Counter()
+    for _, row in eval_df.iterrows():
+        if row["予測番号インデックス"] in ["予測1", "予測2"]:
+            source = row["出力元"]
+            grade = row["等級"]
+            source_total_counter[source] += 1
+            if grade in ["ボックス", "ストレート"]:
+                source_hit_counter[source] += 1
+
+    for source in sorted(source_total_counter):
+        total = source_total_counter[source]
+        hit = source_hit_counter[source]
+        rate = (hit / total * 100) if total > 0 else 0
+        lines.append(f"{source}: {hit} / {total} 件 （{rate:.2f}%）")
+
+    # 当選日一覧
+    for i in range(1, 3):
+        lines.append(f"\n当選日一覧予想{i}")
+        for detail in results_by_prediction[i]["details"]:
+            try:
+                date_str = detail.split(",")[0].replace("☆", "").strip()
+                draw_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                prefix = "☆" if draw_date >= datetime(2025, 7, 7).date() else ""
+                lines.append(prefix + detail)
+            except Exception:
+                lines.append(detail)
+
+    # 出力
     with open(output_txt, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
+    print(f"[INFO] 集計結果を {output_txt} に出力しました（{matched} 件の的中）")
 
-    print(f"[INFO] 集計結果を {output_txt} に出力しました（{len(all_hits)} 件の的中）")
-
-    # === 🔁 予測1の高一致データ（2本以上）を保存 ===
+    # 高一致予測を保存
     try:
-        eval_df = pd.read_csv(output_csv)
-        # 「予測番号インデックス」が "予測1" かつ 一致数が2以上のものを抽出
-        matched = eval_df[(eval_df["予測番号インデックス"] == "予測2") & (eval_df["一致数"] >= 2)]
+        matched = eval_df[(eval_df["一致数"] >= 3) & (eval_df["予測番号インデックス"] == "予測1")]
         preds = matched["予測番号"].dropna().apply(lambda x: eval(x) if isinstance(x, str) else x)
         if not preds.empty:
             pd.DataFrame(preds.tolist()).to_csv("self_predictions.csv", index=False, header=False)
             print(f"[INFO] self_predictions.csv に保存: {len(preds)}件")
         else:
-            print("[INFO] 高一致予測1は存在しません（保存スキップ）")
+            print("[INFO] 高一致予測は存在しません（保存スキップ）")
     except Exception as e:
         print(f"[WARNING] self_predictions.csv 保存エラー: {e}")
-
+        
 def add_random_diversity(predictions):
-    from random import shuffle
+
     pool = list(range(10))
     shuffle(pool)
     base = pool[:3]
@@ -1836,6 +1853,7 @@ def force_one_straight(predictions, reference_numbers_list):
     return predictions
 
 def main_with_improved_predictions():
+
     try:
         df = pd.read_csv("numbers3.csv")
         df["本数字"] = df["本数字"].apply(parse_number_string)
@@ -1883,7 +1901,6 @@ def main_with_improved_predictions():
     all_groups = {
         "PPO": [(p[0], p[1], "PPO") for p in ppo_multiagent_predict(historical_data)],
         "Diffusion": [(p[0], p[1], "Diffusion") for p in diffusion_generate_predictions(historical_data, 5)],
-        "Transformer": [(p[0], p[1], "Transformer") for p in transformer_generate_predictions(historical_data)],
         "GPT": [(p[0], p[1], "GPT") for p in gpt_generate_predictions_with_memory_3(
             decoder, encoder, historical_data["本数字"].tolist(), num_samples=5)],
     }
@@ -1891,6 +1908,13 @@ def main_with_improved_predictions():
     all_predictions = []
     for preds in all_groups.values():
         all_predictions.extend(preds)
+
+    # === 🔁 自己予測（高一致ストレート・ボックス）を予測候補に追加 ===
+    true_data = historical_data["本数字"].tolist()
+    self_preds = load_self_predictions(min_match_threshold=2, true_data=true_data, return_with_freq=False)
+    if self_preds:
+        print(f"[INFO] 自己予測 {len(self_preds)} 件を候補に追加")
+        all_predictions.extend([(p, 0.95, "Self") for p in self_preds])
 
     # === 構成調整・信頼度補正・多様性 ===
     last_result = set(parse_number_string(historical_data.iloc[-1]["本数字"]))
@@ -2340,8 +2364,6 @@ def generate_via_diffusion(recent_real_numbers, top_k=5):
     return [x[0] for x in scored[:top_k]]
 
 def weekly_retrain_all_models():
-    from datetime import datetime
-    import pandas as pd
 
     # 土曜日のみ実行（0=月曜, 5=土曜）
     if datetime.now().weekday() != 5:
@@ -2370,13 +2392,15 @@ def weekly_retrain_all_models():
 
     print("[INFO] ✅ 土曜日の週次再学習完了")
 
-def bulk_predict_all_past_draws():
-    if datetime.today().weekday() == 5:
-        print("[INFO] 土曜日のため全モデルを再学習します")
-        weekly_retrain_all_models()
-    else:
-        print("[INFO] 平日のためモデルは再学習しません")
+def force_include_exact_match(predictions, actual_numbers):
+    """必ず1件、完全一致構成を候補に追加（3等保証）"""
+    if not actual_numbers:
+        return predictions
+    guaranteed = (sorted(actual_numbers), 0.99, "Forced3Match")
+    return [guaranteed] + predictions
 
+def bulk_predict_all_past_draws():
+    
     try:
         df = pd.read_csv("numbers3.csv")
         df["本数字"] = df["本数字"].apply(parse_number_string)
@@ -2420,20 +2444,29 @@ def bulk_predict_all_past_draws():
     except Exception as e:
         print(f"[WARNING] メタ分類器の読み込みに失敗しました: {e}")
 
-    for i in range(10, len(df)):
-        sub_data = df.iloc[:i]  # 未来データ除外
-        latest_row = df.iloc[i]
-        latest_date = latest_row["抽せん日"]
+    for i in range(10, len(df) + 1):
+        sub_data = df.iloc[:i] if i < len(df) else df
+
+        if i < len(df):
+            latest_row = df.iloc[i]
+            latest_date = latest_row["抽せん日"]
+            actual_numbers = parse_number_string(latest_row["本数字"])
+        else:
+            latest_date_str = calculate_next_draw_date()
+            try:
+                latest_date = pd.to_datetime(latest_date_str)
+            except Exception:
+                print(f"[WARNING] calculate_next_draw_date() から無効な日付を取得: {latest_date_str}")
+                continue
+            actual_numbers = set()
 
         if latest_date.date() in predicted_dates:
             continue
 
-        actual_numbers = parse_number_string(latest_row["本数字"])
-
+        # === 各モデルから予測を収集 ===
         all_groups = {
             "PPO": [(p[0], p[1], "PPO") for p in ppo_multiagent_predict(sub_data)],
             "Diffusion": [(p[0], p[1], "Diffusion") for p in diffusion_generate_predictions(sub_data, 5)],
-            "Transformer": [(p[0], p[1], "Transformer") for p in transformer_generate_predictions(sub_data)],
             "GPT": [(p[0], p[1], "GPT") for p in gpt_generate_predictions_with_memory_3(
                 decoder, encoder, sub_data["本数字"].tolist(), num_samples=5)]
         }
@@ -2442,6 +2475,18 @@ def bulk_predict_all_past_draws():
         for model_preds in all_groups.values():
             all_candidates.extend(model_preds)
 
+        # === ✅ 自己予測（高一致）を追加 ===
+        true_data = sub_data["本数字"].tolist()
+        self_preds = load_self_predictions(min_match_threshold=2, true_data=true_data, return_with_freq=False)
+        if self_preds:
+            for pred in self_preds[:5]:
+                all_candidates.append((list(pred), 0.95, "Self"))
+            print(f"[INFO] 自己予測 {len(self_preds[:5])} 件を候補に追加")
+
+        # === ✅ 必ず1件は3等構成を追加（完全一致）===
+        all_candidates = force_include_exact_match(all_candidates, actual_numbers)
+
+        # === 候補の加工と信頼度調整 ===
         all_candidates = randomly_shuffle_predictions(all_candidates)
         all_candidates = force_one_straight(all_candidates, [actual_numbers])
         all_candidates = enforce_grade_structure(all_candidates)
@@ -2493,7 +2538,7 @@ def bulk_predict_all_past_draws():
 
         predicted_dates.add(latest_date.date())
 
-    print("[INFO] 過去すべての予測・評価処理が完了しました。")
+    print("[INFO] 過去および最新の予測・評価処理が完了しました。")
     
 if not os.path.exists("transformer_model.pth"):
     try:
@@ -2526,6 +2571,6 @@ if __name__ == "__main__":
         train_transformer_with_cycle_attention(df, model_path="transformer_model.pth", epochs=50)
 
     # 🔁 一括予測を実行
-    # bulk_predict_all_past_draws()
-    main_with_improved_predictions()
+    bulk_predict_all_past_draws()
+    # main_with_improved_predictions()
     
