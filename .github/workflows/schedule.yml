@@ -1,0 +1,26 @@
+name: Auto Scrape Numbers3
+
+on:
+  schedule:
+    - cron: '0 12 * * 1-6'  # 日本時間21:00（UTC12:00）に月～土で実行
+  workflow_dispatch:  # 手動実行も可能に
+
+jobs:
+  run-scraper:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt || echo "No requirements.txt"
+
+      - name: Run scraping script
+        run: python scrapingnumbers3.py
