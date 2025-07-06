@@ -1,80 +1,98 @@
-import requests
-from bs4 import BeautifulSoup
-import pandas as pd
-from datetime import datetime
 import csv
+from datetime import datetime
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import pandas as pd
+import os
 
-LOG_FILE = "scraping_log.txt"
-CSV_FILE = "numbers3.csv"
-
-def log(msg):
-    print(msg)
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(msg + "\n")
+# === 設定 ===
+chrome_options = Options()
+chrome_options.add_argument("--headless")
+chrome_options.add_argument("--no-sandbox")
+chrome_options.add_argument("--disable-dev-shm-usage")
+driver = webdriver.Chrome(options=chrome_options)
 
 url = "https://www.mizuhobank.co.jp/takarakuji/check/numbers/numbers3/index.html"
+driver.get(url)
+wait = WebDriverWait(driver, 10)
+
+data = []
 
 try:
-    response = requests.get(url, timeout=10)
-    response.encoding = "utf-8"
-    soup = BeautifulSoup(response.text, "html.parser")
-    log("[INFO] ページ取得成功")
+    dates = wait.until(EC.presence_of_all_elements_located((By.CLASS_NAME, "js-lottery-date-pc")))
+    numbers = driver.find_elements(By.CLASS_NAME, "js-lottery-number-pc")
+    issues = driver.find_elements(By.CLASS_NAME, "js-lottery-issue-pc")
+    prize_elems = driver.find_elements(By.CSS_SELECTOR, "tr.js-lottery-prize-pc strong.section__text--bold")
 
-    tables = soup.select("table.typeTK")
-    rows = tables[0].select("tr")[1:]  # ヘッダ除外
+    num_results = min(len(dates), len(numbers), len(issues))
 
-    data = []
-    for row in rows:
-        cols = row.select("td")
-        if len(cols) < 5:
-            continue
+    for i in range(num_results):
         try:
-            draw_number = cols[0].text.strip()
-            draw_date = datetime.strptime(cols[1].text.strip(), "%Y年%m月%d日").strftime("%Y-%m-%d")
-            main_number = str([int(d) for d in cols[2].text.strip()])
+            dates = driver.find_elements(By.CLASS_NAME, "js-lottery-date-pc")
+            numbers = driver.find_elements(By.CLASS_NAME, "js-lottery-number-pc")
+            issues = driver.find_elements(By.CLASS_NAME, "js-lottery-issue-pc")
+            prize_elems = driver.find_elements(By.CSS_SELECTOR, "tr.js-lottery-prize-pc strong.section__text--bold")
 
-            prize_values = [td.text.strip().replace(",", "").replace("円", "") for td in cols[3:]]
-            prize_values = [int(p) if p.isdigit() else None for p in prize_values]
+            draw_date = datetime.strptime(dates[i].text.strip(), "%Y年%m月%d日").strftime("%Y-%m-%d")
+            draw_number = issues[i].text.strip()
+            main_number = str([int(d) for d in numbers[i].text.strip()])
 
-            record = {
+            base_index = i * 5
+
+            def get_prize(j):
+                try:
+                    return int(prize_elems[base_index + j].text.replace(",", "").replace("円", "").strip())
+                except:
+                    return None
+
+            data.append({
                 "回別": draw_number,
                 "抽せん日": draw_date,
                 "本数字": main_number,
-                "ストレート": prize_values[0],
-                "ボックス": prize_values[1],
-                "セット(ストレート)": prize_values[2],
-                "セット(ボックス)": prize_values[3],
-                "ミニ": prize_values[4],
-            }
-            data.append(record)
-            log(f"[DATA] {record}")
+                "ストレート": get_prize(0),
+                "ボックス": get_prize(1),
+                "セット(ストレート)": get_prize(2),
+                "セット(ボックス)": get_prize(3),
+                "ミニ": get_prize(4),
+            })
+
         except Exception as e:
-            log(f"[WARNING] パースエラー: {e}")
+            print(f"[WARNING] 回 {i+1} でエラー: {e}")
 
-    # 保存
-    try:
-        existing = pd.read_csv(CSV_FILE)
-        existing_dates = existing["抽せん日"].tolist()
-        fieldnames = existing.columns.tolist()
-    except FileNotFoundError:
-        existing = pd.DataFrame()
-        existing_dates = []
-        fieldnames = ["抽せん日", "本数字", "回別", "ストレート", "ボックス", "セット(ストレート)", "セット(ボックス)", "ミニ"]
+finally:
+    driver.quit()
 
-    new_rows = [row for row in data if row["抽せん日"] not in existing_dates]
-    if new_rows:
-        with open(CSV_FILE, mode="a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            if existing.empty:
-                writer.writeheader()
-            writer.writerows(new_rows)
+# === 保存処理 ===
+csv_path = "numbers3.csv"
+try:
+    existing = pd.read_csv(csv_path)
+    existing_dates = existing["抽せん日"].tolist()
+    fieldnames = existing.columns.tolist()
+except FileNotFoundError:
+    existing = pd.DataFrame()
+    existing_dates = []
+    fieldnames = ["抽せん日", "本数字", "回別", "ストレート", "ボックス", "セット(ストレート)", "セット(ボックス)", "ミニ"]
 
-        df = pd.read_csv(CSV_FILE)
-        df.sort_values("抽せん日", inplace=True)
-        df.to_csv(CSV_FILE, index=False, encoding="utf-8")
-        log(f"[INFO] {len(new_rows)}件を保存し、日付順に並び替えました。")
-    else:
-        log("[INFO] 新規データはありませんでした。")
+new_rows = [row for row in data if row["抽せん日"] not in existing_dates]
 
-except Exception as e:
-    log(f"[ERROR] スクレイピング中に例外発生: {e}")
+if new_rows:
+    with open(csv_path, mode="a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if existing.empty:
+            writer.writeheader()
+        writer.writerows(new_rows)
+
+# 並び替え（日付順）
+if new_rows:
+    df = pd.read_csv(csv_path)
+    df.sort_values("抽せん日", inplace=True)
+    df.to_csv(csv_path, index=False, encoding="utf-8")
+    print(f"[INFO] {len(new_rows)}件を保存し、日付順に並び替えました。")
+
+# 結果表示
+for row in new_rows:
+    print(row)
