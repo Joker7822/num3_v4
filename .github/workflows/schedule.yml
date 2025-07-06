@@ -2,12 +2,12 @@ name: Auto Scrape Numbers3
 
 on:
   schedule:
-    - cron: '0 11 * * 1-5'  # JST 20:00 → UTC 11:00、月〜金（1=月, 5=金）
+    - cron: '0 11 * * 1-5'  # JST 20:00（UTC 11:00）、月〜金
   workflow_dispatch:
 
 jobs:
   run-scraper:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest  # ✅ .exe使用にはWindowsが必須
 
     steps:
       - name: Checkout repository
@@ -22,22 +22,5 @@ jobs:
         run: |
           pip install selenium pandas
 
-      - name: Install Chrome
-        run: |
-          sudo apt update
-          sudo apt install -y wget unzip xvfb
-          wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo apt install -y ./google-chrome*.deb
-
-      - name: Download ChromeDriver
-        run: |
-          CHROME_VERSION=$(google-chrome --version | cut -d ' ' -f 3 | cut -d '.' -f 1)
-          DRIVER_VERSION=$(wget -qO- "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION")
-          wget https://chromedriver.storage.googleapis.com/$DRIVER_VERSION/chromedriver_linux64.zip
-          unzip chromedriver_linux64.zip
-          sudo mv chromedriver /usr/local/bin/
-          sudo chmod +x /usr/local/bin/chromedriver
-
-      - name: Run script
-        run: |
-          python scrapingnumbers3.py
+      - name: Run scraper script
+        run: python scrapingnumbers3.py
