@@ -2123,6 +2123,6 @@ if __name__ == "__main__":
         train_transformer_with_cycle_attention(df, model_path="transformer_model.pth", epochs=50)
 
     # 🔁 一括予測を実行
-    # bulk_predict_all_past_draws()
-    main_with_improved_predictions()
+    bulk_predict_all_past_draws()
+    # main_with_improved_predictions()
     
