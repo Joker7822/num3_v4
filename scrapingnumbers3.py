@@ -31,33 +31,38 @@ try:
 
     num_results = min(len(dates), len(numbers), len(issues))
 
-    for i in range(num_results):
-        try:
-            draw_date = datetime.strptime(dates[i].text.strip(), "%Y年%m月%d日").strftime("%Y-%m-%d")
-            draw_number = issues[i].text.strip()
-            main_number = ''.join(numbers[i].text.strip())  # 本数字を "123" のような文字列に変換
+for i in range(num_results):
+    try:
+        date_text = dates[i].text.strip()
+        if not date_text:
+            print(f"[WARNING] 回 {i+1}: 日付が空です（スキップ）")
+            continue
 
-            base_index = i * 5
+        draw_date = datetime.strptime(date_text, "%Y年%m月%d日").strftime("%Y-%m-%d")
+        draw_number = issues[i].text.strip()
+        main_number = ''.join(numbers[i].text.strip())
 
-            def get_prize(j):
-                try:
-                    return int(prize_elems[base_index + j].text.replace(",", "").replace("円", "").strip())
-                except:
-                    return None
+        base_index = i * 5
 
-            data.append({
-                "回別": draw_number,
-                "抽せん日": draw_date,
-                "本数字": main_number,
-                "ストレート": get_prize(0),
-                "ボックス": get_prize(1),
-                "セット(ストレート)": get_prize(2),
-                "セット(ボックス)": get_prize(3),
-                "ミニ": get_prize(4),
-            })
+        def get_prize(j):
+            try:
+                return int(prize_elems[base_index + j].text.replace(",", "").replace("円", "").strip())
+            except:
+                return None
 
-        except Exception as e:
-            print(f"[WARNING] {i+1} 回目の抽出中にエラー: {e}")
+        data.append({
+            "回別": draw_number,
+            "抽せん日": draw_date,
+            "本数字": main_number,
+            "ストレート": get_prize(0),
+            "ボックス": get_prize(1),
+            "セット(ストレート)": get_prize(2),
+            "セット(ボックス)": get_prize(3),
+            "ミニ": get_prize(4),
+        })
+
+    except Exception as e:
+        print(f"[WARNING] 回 {i+1} でエラー: {e}")
 
 finally:
     driver.quit()
