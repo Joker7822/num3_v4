@@ -18,16 +18,20 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Chrome v116
+      - name: Install Chrome 138.0.7204.92 (for Testing)
         run: |
-          wget https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_116.0.5845.96-1_amd64.deb
-          sudo apt install -y ./google-chrome-stable_116.0.5845.96-1_amd64.deb
+          sudo apt update
+          sudo apt install -y wget unzip xvfb libglib2.0-0 libnss3 libgconf-2-4 libxi6 libxcursor1 libxss1 libxcomposite1 libasound2 libxtst6 libatk-bridge2.0-0 libgtk-3-0
+          wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chrome-linux64.zip
+          unzip chrome-linux64.zip
+          sudo mv chrome-linux64 /opt/chrome
+          sudo ln -s /opt/chrome/chrome /usr/bin/google-chrome
 
-      - name: Install ChromeDriver v116
+      - name: Install ChromeDriver 138.0.7204.92 (for Testing)
         run: |
-          wget https://chromedriver.storage.googleapis.com/116.0.5845.96/chromedriver_linux64.zip
-          unzip chromedriver_linux64.zip
-          sudo mv chromedriver /usr/local/bin/
+          wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chromedriver-linux64.zip
+          unzip chromedriver-linux64.zip
+          sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
           sudo chmod +x /usr/local/bin/chromedriver
 
       - name: Install Python dependencies
@@ -36,4 +40,4 @@ jobs:
 
       - name: Run scraping script
         run: |
-          python scrapingnumbers3.py
+          xvfb-run -a python scrapingnumbers3.py
