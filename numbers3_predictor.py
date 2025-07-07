@@ -1355,7 +1355,7 @@ def transformer_generate_predictions(df, model_path="transformer_model.pth"):
         return [(prediction, 0.95)]
 
 def evaluate_and_summarize_predictions(
-    pred_file="numbers3_predictions.csv",
+    pred_file="Numbers3_predictions.csv",
     actual_file="numbers3.csv",
     output_csv="evaluation_result.csv",
     output_txt="evaluation_summary.txt"
@@ -1597,7 +1597,7 @@ def main_with_improved_predictions():
         else:
             result[f"出力元{i+1}"] = "Unknown"
 
-    pred_path = "numbers3_predictions.csv"
+    pred_path = "Numbers3_predictions.csv"
     if os.path.exists(pred_path):
         pred_df = pd.read_csv(pred_path)
         pred_df = pred_df[pred_df["抽せん日"] != next_draw_date.strftime("%Y-%m-%d")]
