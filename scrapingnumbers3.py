@@ -16,7 +16,7 @@ chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--disable-dev-shm-usage")
 
 # chromedriver.exe を相対パスで指定（GitHubにアップロード済み想定）
-driver_path = os.path.join(os.getcwd(), "chromedriver.exe")
+driver_path = os.path.join(os.getcwd(), "chromedriver")
 chrome_service = Service(executable_path=driver_path)
 driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
 
