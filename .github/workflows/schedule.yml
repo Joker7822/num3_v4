@@ -37,8 +37,8 @@ jobs:
           sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
           sudo chmod +x /usr/local/bin/chromedriver
 
-      - name: Install Python packages
-        run: pip install selenium pandas
+      - name: Install Python packages from requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Run scraping script
         run: xvfb-run -a python scrapingnumbers3.py
