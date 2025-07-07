@@ -40,7 +40,9 @@ try:
 
             draw_date = datetime.strptime(date_text, "%Y年%m月%d日").strftime("%Y-%m-%d")
             draw_number = issues[i].text.strip()
-            main_number = ''.join(numbers[i].text.strip())
+            main_number_digits = [int(ch) for ch in numbers[i].text.strip()]
+            main_number = repr(main_number_digits)
+
 
             base_index = i * 5
 
