@@ -1,24 +1,21 @@
 import csv
 from datetime import datetime
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import pandas as pd
 import os
 
-# === 設定 ===
-chrome_options = Options()
-chrome_options.add_argument("--headless")
-chrome_options.add_argument("--no-sandbox")
-chrome_options.add_argument("--disable-dev-shm-usage")
+# === Chrome設定 ===
+options = Options()
+options.add_argument("--headless")
+options.add_argument("--no-sandbox")
+options.add_argument("--disable-dev-shm-usage")
 
-# chromedriver.exe を相対パスで指定（GitHubにアップロード済み想定）
-driver_path = os.path.join(os.getcwd(), "chromedriver")
-chrome_service = Service(executable_path=driver_path)
-driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
+# chromedriver は /usr/local/bin にある想定（GitHub Actions用）
+driver = webdriver.Chrome(options=options)
 
 url = "https://www.mizuhobank.co.jp/takarakuji/check/numbers/numbers3/index.html"
 driver.get(url)
@@ -36,14 +33,9 @@ try:
 
     for i in range(num_results):
         try:
-            dates = driver.find_elements(By.CLASS_NAME, "js-lottery-date-pc")
-            numbers = driver.find_elements(By.CLASS_NAME, "js-lottery-number-pc")
-            issues = driver.find_elements(By.CLASS_NAME, "js-lottery-issue-pc")
-            prize_elems = driver.find_elements(By.CSS_SELECTOR, "tr.js-lottery-prize-pc strong.section__text--bold")
-
             draw_date = datetime.strptime(dates[i].text.strip(), "%Y年%m月%d日").strftime("%Y-%m-%d")
             draw_number = issues[i].text.strip()
-            main_number = str([int(d) for d in numbers[i].text.strip()])
+            main_number = ''.join(numbers[i].text.strip())  # 本数字を "123" のような文字列に変換
 
             base_index = i * 5
 
@@ -65,7 +57,7 @@ try:
             })
 
         except Exception as e:
-            print(f"[WARNING] 回 {i+1} でエラー: {e}")
+            print(f"[WARNING] {i+1} 回目の抽出中にエラー: {e}")
 
 finally:
     driver.quit()
@@ -81,6 +73,7 @@ except FileNotFoundError:
     existing_dates = []
     fieldnames = ["抽せん日", "本数字", "回別", "ストレート", "ボックス", "セット(ストレート)", "セット(ボックス)", "ミニ"]
 
+# 新しいデータを抽出（同一日付除外）
 new_rows = [row for row in data if row["抽せん日"] not in existing_dates]
 
 if new_rows:
@@ -90,13 +83,13 @@ if new_rows:
             writer.writeheader()
         writer.writerows(new_rows)
 
-# 並び替え（日付順）
+# 並び替え（昇順）
 if new_rows:
     df = pd.read_csv(csv_path)
     df.sort_values("抽せん日", inplace=True)
     df.to_csv(csv_path, index=False, encoding="utf-8")
     print(f"[INFO] {len(new_rows)}件を保存し、日付順に並び替えました。")
 
-# 結果表示
+# === 結果出力 ===
 for row in new_rows:
     print(row)
