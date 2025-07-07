@@ -42,3 +42,15 @@ jobs:
 
       - name: Run scraping script
         run: xvfb-run -a python scrapingnumbers3.py
+
+      - name: Commit and push if changed
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add numbers3.csv
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Auto update numbers3.csv [skip ci]"
+            git push
+          fi
