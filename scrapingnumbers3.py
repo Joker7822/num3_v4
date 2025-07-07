@@ -14,48 +14,55 @@ options.add_argument("--headless")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
 
-# chromedriver は /usr/local/bin にある想定（GitHub Actions用）
+# --- Chrome起動とURLアクセス ---
 driver = webdriver.Chrome(options=options)
-
 url = "https://www.mizuhobank.co.jp/takarakuji/check/numbers/numbers3/index.html"
 driver.get(url)
 wait = WebDriverWait(driver, 10)
 
 data = []
 
-for i in range(num_results):
-    try:
-        date_text = dates[i].text.strip()
-        if not date_text:
-            print(f"[WARNING] 回 {i+1}: 日付が空です（スキップ）")
-            continue
+try:
+    # この try の中にすべての処理を入れる
+    dates = wait.until(EC.presence_of_all_elements_located((By.CLASS_NAME, "js-lottery-date-pc")))
+    numbers = driver.find_elements(By.CLASS_NAME, "js-lottery-number-pc")
+    issues = driver.find_elements(By.CLASS_NAME, "js-lottery-issue-pc")
+    prize_elems = driver.find_elements(By.CSS_SELECTOR, "tr.js-lottery-prize-pc strong.section__text--bold")
 
-        draw_date = datetime.strptime(date_text, "%Y年%m月%d日").strftime("%Y-%m-%d")
-        draw_number = issues[i].text.strip()
-        main_number_raw = numbers[i].text.strip()
-        main_number = str([int(c) for c in main_number_raw])  # ←ここを修正
+    num_results = min(len(dates), len(numbers), len(issues))
 
-        base_index = i * 5
+    for i in range(num_results):
+        try:
+            date_text = dates[i].text.strip()
+            if not date_text:
+                print(f"[WARNING] 回 {i+1}: 日付が空です（スキップ）")
+                continue
 
-        def get_prize(j):
-            try:
-                return int(prize_elems[base_index + j].text.replace(",", "").replace("円", "").strip())
-            except:
-                return None
+            draw_date = datetime.strptime(date_text, "%Y年%m月%d日").strftime("%Y-%m-%d")
+            draw_number = issues[i].text.strip()
+            main_number = str([int(c) for c in numbers[i].text.strip()])
 
-        data.append({
-            "回別": draw_number,
-            "抽せん日": draw_date,
-            "本数字": main_number,
-            "ストレート": get_prize(0),
-            "ボックス": get_prize(1),
-            "セット(ストレート)": get_prize(2),
-            "セット(ボックス)": get_prize(3),
-            "ミニ": get_prize(4),
-        })
+            base_index = i * 5
 
-    except Exception as e:
-        print(f"[WARNING] 回 {i+1} でエラー: {e}")
+            def get_prize(j):
+                try:
+                    return int(prize_elems[base_index + j].text.replace(",", "").replace("円", "").strip())
+                except:
+                    return None
+
+            data.append({
+                "回別": draw_number,
+                "抽せん日": draw_date,
+                "本数字": main_number,
+                "ストレート": get_prize(0),
+                "ボックス": get_prize(1),
+                "セット(ストレート)": get_prize(2),
+                "セット(ボックス)": get_prize(3),
+                "ミニ": get_prize(4),
+            })
+
+        except Exception as e:
+            print(f"[WARNING] 回 {i+1} でエラー: {e}")
 
 finally:
     driver.quit()
