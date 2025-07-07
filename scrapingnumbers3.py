@@ -31,38 +31,38 @@ try:
 
     num_results = min(len(dates), len(numbers), len(issues))
 
-for i in range(num_results):
-    try:
-        date_text = dates[i].text.strip()
-        if not date_text:
-            print(f"[WARNING] 回 {i+1}: 日付が空です（スキップ）")
-            continue
+    for i in range(num_results):  # ← try の中に入れる
+        try:
+            date_text = dates[i].text.strip()
+            if not date_text:
+                print(f"[WARNING] 回 {i+1}: 日付が空です（スキップ）")
+                continue
 
-        draw_date = datetime.strptime(date_text, "%Y年%m月%d日").strftime("%Y-%m-%d")
-        draw_number = issues[i].text.strip()
-        main_number = ''.join(numbers[i].text.strip())
+            draw_date = datetime.strptime(date_text, "%Y年%m月%d日").strftime("%Y-%m-%d")
+            draw_number = issues[i].text.strip()
+            main_number = ''.join(numbers[i].text.strip())
 
-        base_index = i * 5
+            base_index = i * 5
 
-        def get_prize(j):
-            try:
-                return int(prize_elems[base_index + j].text.replace(",", "").replace("円", "").strip())
-            except:
-                return None
+            def get_prize(j):
+                try:
+                    return int(prize_elems[base_index + j].text.replace(",", "").replace("円", "").strip())
+                except:
+                    return None
 
-        data.append({
-            "回別": draw_number,
-            "抽せん日": draw_date,
-            "本数字": main_number,
-            "ストレート": get_prize(0),
-            "ボックス": get_prize(1),
-            "セット(ストレート)": get_prize(2),
-            "セット(ボックス)": get_prize(3),
-            "ミニ": get_prize(4),
-        })
+            data.append({
+                "回別": draw_number,
+                "抽せん日": draw_date,
+                "本数字": main_number,
+                "ストレート": get_prize(0),
+                "ボックス": get_prize(1),
+                "セット(ストレート)": get_prize(2),
+                "セット(ボックス)": get_prize(3),
+                "ミニ": get_prize(4),
+            })
 
-    except Exception as e:
-        print(f"[WARNING] 回 {i+1} でエラー: {e}")
+        except Exception as e:
+            print(f"[WARNING] 回 {i+1} でエラー: {e}")
 
 finally:
     driver.quit()
