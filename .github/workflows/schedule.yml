@@ -53,8 +53,10 @@ jobs:
           git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
 
           git fetch origin
+          git stash --include-untracked
           git checkout ${{ github.ref_name }}
           git pull --rebase origin ${{ github.ref_name }}
+          git stash pop || true  # コンフリクトしない限り元に戻す
 
           git add numbers3.csv
 
