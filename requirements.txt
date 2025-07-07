@@ -1,3 +1,4 @@
+# 明示バージョン（互換性のため）
 streamlit==1.27.2
 pandas==2.1.0
 matplotlib==3.7.1
@@ -5,16 +6,16 @@ numpy==1.24.4
 scikit-learn==1.3.2
 lxml==4.6.5
 xgboost==1.7.6
-catboost
-lightgbm
-statsmodels
-stable_baselines3
-gym
-optuna
-aiohttp
-neuralforecast
-onnxruntime
-autogluon
 selenium==4.21.0
 requests
 beautifulsoup4
+aiohttp
+optuna
+gym
+stable_baselines3
+statsmodels
+catboost
+lightgbm
+neuralforecast
+onnxruntime
+autogluon
