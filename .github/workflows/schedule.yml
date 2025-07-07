@@ -21,7 +21,11 @@ jobs:
       - name: Install Chrome 138.0.7204.92 (for Testing)
         run: |
           sudo apt update
-          sudo apt install -y wget unzip xvfb libglib2.0-0 libnss3 libgconf-2-4 libxi6 libxcursor1 libxss1 libxcomposite1 libasound2 libxtst6 libatk-bridge2.0-0 libgtk-3-0
+          sudo apt install -y \
+            wget unzip xvfb \
+            libglib2.0-0 libnss3 libxi6 libxcomposite1 libxss1 \
+            libatk-bridge2.0-0 libgtk-3-0 libasound2t64
+
           wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chrome-linux64.zip
           unzip chrome-linux64.zip
           sudo mv chrome-linux64 /opt/chrome
