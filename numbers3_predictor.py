@@ -2401,25 +2401,48 @@ def generate_progress_dashboard_text(eval_file="evaluation_result.csv", output_t
         df["年"] = df["抽せん日"].dt.year
         df["月"] = df["抽せん日"].dt.to_period("M")
 
-        # 等級ごとの賞金
+        # 等級ごとの賞金（ミニ除外）
         reward_map = {"ストレート": 105000, "ボックス": 15000}
         df["収益"] = df["等級"].map(reward_map).fillna(0)
 
+        # 年 <= 2000 → 年単位、それ以降 → 月単位
+        df["集計単位"] = df["抽せん日"].apply(lambda d: str(d.year) if d.year <= 2020 else str(d.to_period("M")))
+
         lines = []
+        lines.append("【📆 全体の収益と目標達成率】")
+        summary_all = df.groupby("集計単位")["収益"].sum().reset_index()
+        summary_all["達成率"] = (summary_all["収益"] / 1000000).clip(upper=1.0)
 
-        # === 年・月別集計 ===
-        lines.append("【📆 収益と目標達成率】")
-        df["集計単位"] = df["抽せん日"].apply(lambda d: str(d.year) if d.year <= 2015 else str(d.to_period("M")))
-        summary = df.groupby("集計単位")["収益"].sum().reset_index()
-        summary["達成率"] = (summary["収益"] / 1000000).clip(upper=1.0)
-
-        for _, row in summary.iterrows():
+        for _, row in summary_all.iterrows():
             期間 = row["集計単位"]
             収益 = int(row["収益"])
             達成率 = round(row["達成率"] * 100, 1)
             lines.append(f"- {期間}：{収益:,} 円（達成率: {達成率}%）")
 
-        # === 直近5日間の成績 ===
+        # === 予測番号インデックス（予測1〜予測5）ごとの集計 ===
+        lines.append("\n【📌 予測番号別：収益と目標達成率】")
+        if "予測番号インデックス" in df.columns:
+            for i in range(1, 6):
+                key = f"予測{i}"
+                sub_df = df[df["予測番号インデックス"] == key].copy()
+                sub_df["集計単位"] = sub_df["抽せん日"].apply(lambda d: str(d.year) if d.year <= 2020 else str(d.to_period("M")))
+
+                summary_sub = sub_df.groupby("集計単位")["収益"].sum().reset_index()
+                summary_sub["達成率"] = (summary_sub["収益"] / 1000000).clip(upper=1.0)
+
+                lines.append(f"\n─── 🎯 {key} ───")
+                if summary_sub.empty:
+                    lines.append("※ データなし")
+                    continue
+                for _, row in summary_sub.iterrows():
+                    期間 = row["集計単位"]
+                    収益 = int(row["収益"])
+                    達成率 = round(row["達成率"] * 100, 1)
+                    lines.append(f"- {期間}：{収益:,} 円（達成率: {達成率}%）")
+        else:
+            lines.append("⚠️ 『予測番号インデックス』列が見つかりません")
+
+        # === 直近5日間の等級内訳 ===
         recent_df = df[df["抽せん日"] >= df["抽せん日"].max() - timedelta(days=4)]
         recent_summary = recent_df["等級"].value_counts().reindex(["ストレート", "ボックス", "ミニ", "はずれ"]).fillna(0).astype(int)
 
@@ -2427,6 +2450,7 @@ def generate_progress_dashboard_text(eval_file="evaluation_result.csv", output_t
         for grade, count in recent_summary.items():
             lines.append(f"- {grade}: {count} 件")
 
+        # テキストファイルに出力
         with open(output_txt, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
 
@@ -2434,7 +2458,6 @@ def generate_progress_dashboard_text(eval_file="evaluation_result.csv", output_t
 
     except Exception as e:
         print(f"[ERROR] ダッシュボード出力に失敗しました: {e}")
-
 
 def bulk_predict_all_past_draws():
     if datetime.today().weekday() == 5:
