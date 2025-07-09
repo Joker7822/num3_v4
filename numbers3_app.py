@@ -112,10 +112,14 @@ elif "予測評価" in menu:
 # 予測分析グラフ
 elif "分析グラフ" in menu:
     st.markdown("## 📉 予測の分析グラフ")
-    if os.path.exists("prediction_analysis.png"):
-        st.image("prediction_analysis.png", caption="予測分布とパターン分析", use_column_width=True)
+
+    if os.path.exists("evaluation_result.csv"):
+        from numbers3_predictor import generate_progress_dashboard
+
+        st.info("📊 月別収益・直近5日間の成績をグラフで表示します")
+        generate_progress_dashboard()  # ← グラフ表示関数を呼び出す
     else:
-        st.warning("⚠️ グラフが見つかりません。先に予測を実行してください。")
+        st.warning("⚠️ evaluation_result.csv が見つかりません。先に予測・評価を実行してください。")
 
 # 予測結果表示
 elif "予測結果" in menu:
