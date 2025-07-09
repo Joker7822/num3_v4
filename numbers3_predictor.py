@@ -2559,7 +2559,7 @@ def bulk_predict_all_past_draws():
 
     print("[INFO] 過去および最新の予測・評価処理が完了しました。")
     
-        try:
+    try:
         generate_progress_dashboard_text()
     except Exception as e:
         print(f"[WARNING] テキスト進捗出力に失敗: {e}")
