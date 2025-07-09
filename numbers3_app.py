@@ -40,26 +40,6 @@ def display_scraping_log():
         st.markdown("### 🪵 スクレイピングログ")
         st.text_area("Log Output", log_content, height=300)
 
-# ========= 自動実行（Streamlit Cloud用） =========
-now = now_jst()
-st.write(f"🕒 現在の日本時間: {now.strftime('%Y-%m-%d %H:%M:%S')}")
-
-if (
-    now.weekday() < 5 and
-    now.time() >= time(20, 0) and
-    not already_predicted_today()
-):
-    with st.spinner("⏳ 平日20:00を過ぎたため、自動予測チェック中..."):
-        try:
-
-            main_with_improved_predictions()
-            mark_prediction_done()
-            st.success("✅ 予測処理が完了しました（CSVの内容に基づいています）")
-
-        except Exception as e:
-            st.error(f"❌ 自動予測中にエラーが発生しました: {e}")
-            display_scraping_log()
-
 # ========= UI =========
 st.markdown("<h1 style='color:#FF4B4B;'>🎯 Numbers3 予測AI</h1>", unsafe_allow_html=True)
 
