@@ -94,10 +94,16 @@ elif "分析グラフ" in menu:
     st.markdown("## 📉 予測の分析グラフ")
 
     if os.path.exists("evaluation_result.csv"):
-        from numbers3_predictor import generate_progress_dashboard
+        from numbers3_predictor import generate_progress_dashboard_text
 
-        st.info("📊 月別収益・直近5日間の成績をグラフで表示します")
-        generate_progress_dashboard()  # ← グラフ表示関数を呼び出す
+        st.info("📊 月別収益・直近5日間の成績をテキストで表示します")
+
+        try:
+            dashboard_text = generate_progress_dashboard_text()
+            st.text_area("📈 成績ダッシュボード", dashboard_text, height=300)
+        except Exception as e:
+            st.error(f"❌ ダッシュボード生成中にエラー: {e}")
+
     else:
         st.warning("⚠️ evaluation_result.csv が見つかりません。先に予測・評価を実行してください。")
 
