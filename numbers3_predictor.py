@@ -2391,40 +2391,50 @@ def weekly_retrain_all_models():
 
     print("[INFO] ✅ 土曜日の週次再学習完了")
 
-def generate_progress_dashboard_text(eval_file="evaluation_result.csv"):
+def generate_progress_dashboard_text(eval_file="evaluation_result.csv", output_txt="progress_dashboard.txt"):
     import pandas as pd
     from datetime import timedelta
 
     try:
         df = pd.read_csv(eval_file)
         df["抽せん日"] = pd.to_datetime(df["抽せん日"], errors='coerce')
+        df["年"] = df["抽せん日"].dt.year
         df["月"] = df["抽せん日"].dt.to_period("M")
 
         # 等級ごとの賞金
-        reward_map = {"ストレート": 90000, "ボックス": 37500}
+        reward_map = {"ストレート": 105000, "ボックス": 15000}
         df["収益"] = df["等級"].map(reward_map).fillna(0)
 
-        # === 月別集計 ===
-        monthly = df.groupby("月")["収益"].sum().reset_index()
-        monthly["達成率"] = (monthly["収益"] / 1000000).clip(upper=1.0)
+        lines = []
 
-        print("【📆 月別収益と達成率】")
-        for _, row in monthly.iterrows():
-            月 = str(row["月"])
+        # === 年・月別集計 ===
+        lines.append("【📆 収益と目標達成率】")
+        df["集計単位"] = df["抽せん日"].apply(lambda d: str(d.year) if d.year <= 2015 else str(d.to_period("M")))
+        summary = df.groupby("集計単位")["収益"].sum().reset_index()
+        summary["達成率"] = (summary["収益"] / 1000000).clip(upper=1.0)
+
+        for _, row in summary.iterrows():
+            期間 = row["集計単位"]
             収益 = int(row["収益"])
             達成率 = round(row["達成率"] * 100, 1)
-            print(f"- {月}：{収益:,} 円（達成率: {達成率}%）")
+            lines.append(f"- {期間}：{収益:,} 円（達成率: {達成率}%）")
 
         # === 直近5日間の成績 ===
         recent_df = df[df["抽せん日"] >= df["抽せん日"].max() - timedelta(days=4)]
         recent_summary = recent_df["等級"].value_counts().reindex(["ストレート", "ボックス", "ミニ", "はずれ"]).fillna(0).astype(int)
 
-        print("\n【📅 直近5日間の等級内訳】")
+        lines.append("\n【📅 直近5日間の等級内訳】")
         for grade, count in recent_summary.items():
-            print(f"- {grade}: {count} 件")
+            lines.append(f"- {grade}: {count} 件")
+
+        with open(output_txt, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+        print(f"[INFO] ダッシュボードを {output_txt} に出力しました")
 
     except Exception as e:
         print(f"[ERROR] ダッシュボード出力に失敗しました: {e}")
+
 
 def bulk_predict_all_past_draws():
     if datetime.today().weekday() == 5:
