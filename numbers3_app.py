@@ -99,8 +99,17 @@ elif "分析グラフ" in menu:
         st.info("📊 月別収益・直近5日間の成績をテキストで表示します")
 
         try:
-            dashboard_text = generate_progress_dashboard_text()
-            st.text_area("📈 成績ダッシュボード", dashboard_text, height=300)
+            # ダッシュボード.txtを生成
+            generate_progress_dashboard_text()
+
+            # 生成したファイルを読み込んで表示
+            if os.path.exists("progress_dashboard.txt"):
+                with open("progress_dashboard.txt", encoding="utf-8") as f:
+                    dashboard_text = f.read()
+                st.text_area("📈 成績ダッシュボード", dashboard_text, height=400)
+            else:
+                st.warning("⚠️ progress_dashboard.txt が生成されていません。")
+
         except Exception as e:
             st.error(f"❌ ダッシュボード生成中にエラー: {e}")
 
