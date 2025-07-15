@@ -1,4 +1,4 @@
-name: Auto Scrape Numbers3
+name: Auto Scrape Numbers3_v2
 
 on:
   schedule:
