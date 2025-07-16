@@ -550,7 +550,8 @@ def load_self_predictions(
     min_match_threshold=3,
     true_data=None,
     min_grade="ボックス",
-    return_with_freq=True
+    return_with_freq=True,
+    max_date=None  # ← ★ 追加
 ):
     if not os.path.exists(file_path):
         print(f"[INFO] 自己予測ファイル {file_path} が見つかりません。")
@@ -573,6 +574,11 @@ def load_self_predictions(
         df.columns = columns[:col_count]
 
         df[["d1", "d2", "d3"]] = df[["d1", "d2", "d3"]].astype(int)
+
+            # 🔒 未来データ除外フィルタ（抽せん日があれば）
+        if "抽せん日" in df.columns and max_date is not None:
+            df["抽せん日"] = pd.to_datetime(df["抽せん日"], errors='coerce')
+            df = df[df["抽せん日"] <= pd.to_datetime(max_date)]
 
         if "match" not in df.columns:
             df["match"] = 0
@@ -987,11 +993,12 @@ class LotoPredictor:
         self.scaler = None
         self.feature_names = None
         self.meta_model = None
+        self.meta_model = load_meta_model()
 
     def train_model(self, data, reference_date=None):
         print("[INFO] Numbers3学習開始")
 
-        # ✅ 抽せん日を datetime 化し、未来リークを防止
+        # === 未来データ除外 ===
         data["抽せん日"] = pd.to_datetime(data["抽せん日"], errors='coerce')
         latest_draw_date = reference_date or data["抽せん日"].max()
         data = data[data["抽せん日"] <= latest_draw_date]
@@ -999,13 +1006,19 @@ class LotoPredictor:
 
         true_numbers = data['本数字'].apply(lambda x: parse_number_string(x)).tolist()
 
-        # === ✅ ステップ1: evaluation_result.csv から直近のストレート的中データ追加
+        # === 🔁 evaluation_result.csv 読み込み（1回だけ） ===
         try:
             eval_df = pd.read_csv("evaluation_result.csv")
             eval_df["抽せん日"] = pd.to_datetime(eval_df["抽せん日"], errors="coerce")
+            eval_df = eval_df[eval_df["抽せん日"] <= latest_draw_date]
+        except Exception as e:
+            print(f"[WARNING] evaluation_result.csv 読み込み失敗: {e}")
+            eval_df = pd.DataFrame()
+
+        # === ① ストレート的中（過去30日以内）を再学習に追加
+        if not eval_df.empty:
             recent_hits = eval_df[
                 (eval_df["等級"] == "ストレート") &
-                (eval_df["抽せん日"] <= latest_draw_date) &
                 (eval_df["抽せん日"] >= latest_draw_date - pd.Timedelta(days=30))
             ]
             if not recent_hits.empty:
@@ -1015,14 +1028,17 @@ class LotoPredictor:
                     '本数字': preds.tolist()
                 })
                 data = pd.concat([data, synthetic_rows_eval], ignore_index=True)
-                print(f"[INFO] ストレート的中データを再学習に追加: {len(synthetic_rows_eval)}件")
+                print(f"[INFO] ✅ ストレート的中データ追加: {len(synthetic_rows_eval)}件")
             else:
-                print("[INFO] ストレート的中データ（過去30日以内）なし")
-        except Exception as e:
-            print(f"[WARNING] evaluation_result.csv 読み込み失敗: {e}")
+                print("[INFO] ストレート的中（過去30日以内）なし")
 
-        # === ✅ ステップ2: 自己予測ファイルからの再学習データ追加（スト・ボのみ, 一致数2以上）
-        self_data = load_self_predictions(file_path="self_predictions.csv", min_match_threshold=2, true_data=true_numbers)
+        # === ② 自己予測から一致2+のボックス/ストレート構成を追加
+        self_data = load_self_predictions(
+            file_path="self_predictions.csv",
+            min_match_threshold=2,
+            true_data=true_numbers,
+            max_date=latest_draw_date  # 🔒 未来データ除外
+        )
         added_self = 0
         if self_data:
             high_grade_predictions = []
@@ -1044,9 +1060,9 @@ class LotoPredictor:
                 })
                 data = pd.concat([data, synthetic_rows], ignore_index=True)
                 added_self = len(synthetic_rows)
-        print(f"[INFO] 自己進化データ追加: {added_self}件")
+        print(f"[INFO] ✅ 自己進化データ追加: {added_self}件")
 
-        # === ✅ ステップ3: PPO出力からの再学習データ追加（等級ボックス以上かつ一致数2以上）
+        # === ③ PPO出力から一致2+の構成を追加（評価対象は最新抽せん日まで）
         try:
             ppo_predictions = ppo_multiagent_predict(data, num_predictions=5)
             matched_predictions = []
@@ -1063,13 +1079,29 @@ class LotoPredictor:
                     '本数字': matched_predictions
                 })
                 data = pd.concat([data, synthetic_rows_ppo], ignore_index=True)
-                print(f"[INFO] PPO再学習データ追加: {len(synthetic_rows_ppo)}件")
+                print(f"[INFO] ✅ PPO補強データ追加: {len(synthetic_rows_ppo)}件")
             else:
                 print("[INFO] PPO出力に一致数2+の高等級データは見つかりませんでした")
         except Exception as e:
-            print(f"[WARNING] PPO再学習データ抽出に失敗: {e}")
+            print(f"[WARNING] PPO補強データ抽出に失敗: {e}")
 
-        # 🔁 最新データで再学習へ（後続で実装済みの処理に続く）
+        # === ④ evaluation_result.csv から一致数2+のボックス/ストレートを追加
+        if not eval_df.empty:
+            eval_df["本数字一致数_1"] = eval_df.get("本数字一致数_1", 0)
+            matched = eval_df[
+                (eval_df["本数字一致数_1"] >= 2) &
+                (eval_df["等級"].isin(["ボックス", "ストレート"]))
+            ]
+            if not matched.empty:
+                preds = matched["予測1"].dropna().apply(lambda x: eval(x) if isinstance(x, str) else x)
+                synthetic_rows_eval = pd.DataFrame({
+                    '抽せん日': [latest_draw_date] * len(preds),
+                    '本数字': preds.tolist()
+                })
+                data = pd.concat([data, synthetic_rows_eval], ignore_index=True)
+                print(f"[INFO] ✅ 過去評価から一致2+の予測再学習: {len(synthetic_rows_eval)}件")
+            else:
+                print("[INFO] 一致数2以上の再学習用データは見つかりませんでした")
 
     def predict(self, latest_data, num_candidates=50):
         print("[INFO] Numbers3予測開始")
@@ -1080,54 +1112,65 @@ class LotoPredictor:
             return None, None
 
         X_df = pd.DataFrame(X, columns=self.feature_names)
+        input_size = X.shape[1]
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # === AutoGluonの各桁予測 ===
-        pred_digits = []
-        for i in range(3):
-            pred = self.regression_models[i].predict(X_df)
-            pred_digits.append(pred)
+        pred_digits = [self.regression_models[i].predict(X_df) for i in range(3)]
         auto_preds = np.array(pred_digits).T
 
         # === LSTM予測 ===
-        input_size = X.shape[1]
-        X_tensor = torch.tensor(X.reshape(-1, 1, input_size), dtype=torch.float32)
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        X_tensor = torch.tensor(X.reshape(-1, 1, input_size), dtype=torch.float32).to(device)
         self.lstm_model.to(device)
         self.lstm_model.eval()
         with torch.no_grad():
-            outputs = self.lstm_model(X_tensor.to(device))[:3]
+            outputs = self.lstm_model(X_tensor)[:3]
             lstm_preds = [torch.argmax(out, dim=1).cpu().numpy() for out in outputs]
         lstm_preds = np.array(lstm_preds).T
 
-        # === 候補生成と信頼度スコアリング ===
+        # === 周期スコア取得
+        cycle_scores = calculate_number_cycle_score(latest_data)
+
+        # === 候補生成とスコアリング
         candidates = []
         for i in range(min(len(auto_preds), len(lstm_preds))):
-            # 予測融合（均等加重）
             merged = (0.5 * auto_preds[i] + 0.5 * lstm_preds[i]).round().astype(int)
             numbers = list(map(int, merged))
 
-            # 除外条件：重複・構造スコア
             if len(set(numbers)) < 3:
                 continue
+
             structure_score = score_real_structure_similarity(numbers)
             if structure_score < 0.3:
                 continue
 
-            # メタ分類器による信頼度補正
+            avg_cycle = np.mean([cycle_scores.get(n, 99) for n in numbers])
+            if avg_cycle >= 70:  # 周期スコアでスクリーニング
+                continue
+
             base_conf = 1.0
             corrected_conf = base_conf
             if self.meta_model:
                 try:
-                    feat_vec = X_df.iloc[i].values.reshape(1, -1)
-                    predicted_match = self.meta_model.predict(feat_vec)[0]
+                    extended_features = np.concatenate([
+                        X_df.iloc[i].values,
+                        [structure_score, avg_cycle]
+                    ]).reshape(1, -1)
+                    predicted_match = self.meta_model.predict(extended_features)[0]
                     corrected_conf = max(0.0, min(predicted_match / 3.0, 1.0))
                 except Exception as e:
                     print(f"[WARNING] メタ分類器の補正失敗: {e}")
                     corrected_conf = base_conf
+
             final_conf = 0.5 * base_conf + 0.5 * corrected_conf
 
-            # 優先スコア（構造 + 信頼度）
-            priority_score = 0.5 * structure_score + 0.5 * final_conf
+            # 優先スコア（構造 + 信頼度 + 周期スコア逆転 + メタ補正）
+            priority_score = (
+                0.3 * structure_score +
+                0.3 * final_conf +
+                0.2 * (1 - avg_cycle / 100) +
+                0.2 * (predicted_match / 3 if self.meta_model else 0)
+            )
 
             candidates.append({
                 "numbers": numbers,
@@ -1135,11 +1178,24 @@ class LotoPredictor:
                 "score": priority_score
             })
 
-        # === 上位候補を選抜 ===
-        sorted_candidates = sorted(candidates, key=lambda x: x["score"], reverse=True)
+        # === 上位候補を選抜
+        sorted_candidates = sorted(candidates, key=lambda x: -x["score"])
         top_predictions = [(c["numbers"], c["confidence"]) for c in sorted_candidates[:num_candidates]]
 
-        return top_predictions, [c[1] for c in top_predictions]
+        # === ストレート構成を強制的に1件含める
+        def enforce_strict_structure(preds):
+            has_straight = any(classify_numbers3_prize(p[0], p[0]) == "ストレート" for p in preds)
+            if not has_straight:
+                for _ in range(100):
+                    new = random.sample(range(10), 3)
+                    if len(set(new)) == 3:
+                        preds.insert(0, (new, 0.98))
+                        break
+            return preds
+
+        top_predictions = enforce_strict_structure(top_predictions)
+
+        return top_predictions, [conf for _, conf in top_predictions]
 
 def classify_numbers3_prize(pred, actual):
     if len(pred) != 3 or len(actual) != 3:
@@ -1571,10 +1627,17 @@ def evaluate_and_summarize_predictions(
         actual_df = pd.read_csv(actual_file)
         actual_df['抽せん日'] = pd.to_datetime(actual_df['抽せん日'], errors='coerce').dt.date
         pred_df['抽せん日'] = pd.to_datetime(pred_df['抽せん日'], errors='coerce').dt.date
+
+        # ✅ 未来データの除外（本日より後の抽せん日を含む予測は対象外）
+        today = datetime.now().date()
+        future_preds = pred_df[pred_df['抽せん日'] > today]
+        if not future_preds.empty:
+            print(f"[WARNING] 未来の抽せん日を含む予測があります（{len(future_preds)}件） → 検証対象外にします")
+            pred_df = pred_df[pred_df['抽せん日'] <= today]
+
     except Exception as e:
         print(f"[ERROR] ファイル読み込み失敗: {e}")
-        return
-
+  
     evaluation_results = []
     grade_counter = Counter()
     source_grade_counter = Counter()
@@ -1593,7 +1656,7 @@ def evaluate_and_summarize_predictions(
             continue
         actual_numbers = parse_number_string(actual_row.iloc[0]["本数字"])
 
-        for i in range(1, 3):
+        for i in range(1, 6):
             pred_key = f"予測{i}"
             conf_key = f"信頼度{i}"
             source_key = f"出力元{i}"
@@ -1645,7 +1708,7 @@ def evaluate_and_summarize_predictions(
 
     # 各予測の損益
     box_prize, straight_prize, cost_per_draw = 15000, 105000, 400
-    for i in range(1, 3):
+    for i in range(1, 6):
         lines.append(f"\n== 等級別予想{i}集計 ==")
         for g in grade_list:
             lines.append(f"{g}: {results_by_prediction[i][g]} 件")
@@ -1681,6 +1744,36 @@ def evaluate_and_summarize_predictions(
     lines.append(f"総コスト: ¥{total_cost:,}")
     lines.append(f"最終損益: {'+' if profit >= 0 else '-'}¥{abs(profit):,}")
 
+    # 2025-07-01以降の各予測の集計 ===
+    lines.append("\n== 🆕 2025-07-01以降の各予測集計 ==")
+    target_date = datetime(2025, 7, 1).date()
+
+    for i in range(1, 6):
+        subset = eval_df[
+            (eval_df["予測番号インデックス"] == f"予測{i}") &
+            (pd.to_datetime(eval_df["抽せん日"], errors='coerce').dt.date >= target_date)
+        ]
+        if subset.empty:
+            lines.append(f"\n予測{i}: データなし")
+            continue
+
+        total_preds = len(subset)
+        box = (subset["等級"] == "ボックス").sum()
+        straight = (subset["等級"] == "ストレート").sum()
+        hit_count = box + straight
+        acc = (hit_count / total_preds * 100) if total_preds > 0 else 0
+
+        box_total = box * box_prize
+        straight_total = straight * straight_prize
+        total_reward = box_total + straight_total
+        cost = total_preds * cost_per_draw
+        profit = total_reward - cost
+
+        lines.append(f"\n== 📅 予測{i}（2025-07-01以降） ==")
+        lines.append(f"ボックス: {box} 件, ストレート: {straight} 件")
+        lines.append(f"的中率: {acc:.2f}%")
+        lines.append(f"賞金: ¥{total_reward:,}, コスト: ¥{cost:,}, 損益: {'+' if profit >= 0 else '-'}¥{abs(profit):,}")
+
     # 出力元別的中率
     lines.append("\n== 出力元別的中率（予測1・2のみ） ==")
     source_hit_counter = Counter()
@@ -1700,7 +1793,7 @@ def evaluate_and_summarize_predictions(
         lines.append(f"{source}: {hit} / {total} 件 （{rate:.2f}%）")
 
     # 当選日一覧
-    for i in range(1, 3):
+    for i in range(1, 6):
         lines.append(f"\n当選日一覧予想{i}")
         for detail in results_by_prediction[i]["details"]:
             try:
@@ -2279,6 +2372,48 @@ def create_meta_training_data(evaluation_df, feature_df):
 
     return features.values, target
 
+def train_meta_model(X, confidence_scores, match_scores, source_labels):
+    from sklearn.ensemble import GradientBoostingRegressor
+    import joblib
+    X["出力元"] = source_labels
+    X["信頼度"] = confidence_scores
+    X["構造スコア"] = X.apply(lambda row: score_real_structure_similarity(row["numbers"]), axis=1)
+    # 必要なら周期スコア等も追加
+
+    y = match_scores  # 実際の一致数
+
+    model = GradientBoostingRegressor()
+    model.fit(X, y)
+    joblib.dump(model, "meta_model.pkl")
+    return model
+
+def filter_by_cycle_score(predictions, cycle_scores, threshold=30):
+    filtered = []
+    for pred, conf in predictions:
+        avg_cycle = np.mean([cycle_scores.get(n, 99) for n in pred])
+        if avg_cycle < threshold:
+            filtered.append((pred, conf))
+    return filtered
+
+def generate_synthetic_hits(predictions, true_data, min_match=3):
+    matched = []
+    for pred, _ in predictions:
+        for true in true_data:
+            if len(set(pred) & set(true)) >= min_match:
+                matched.append(pred)
+                break
+    return matched  # → 再学習に利用
+
+def rank_predictions(predictions, cycle_scores, meta_model):
+    ranked = []
+    for pred, conf in predictions:
+        structure = score_real_structure_similarity(pred)
+        cycle = np.mean([cycle_scores.get(n, 99) for n in pred])
+        estimated_match = meta_model.predict([pred])[0]
+        final_score = 0.3 * structure + 0.3 * conf + 0.2 * (1 - cycle / 100) + 0.2 * (estimated_match / 3)
+        ranked.append((pred, conf, final_score))
+    return sorted(ranked, key=lambda x: -x[2])
+
 def train_meta_model_maml(evaluation_csv="evaluation_result.csv", feature_df=None):
     from sklearn.linear_model import Ridge
     from sklearn.base import clone
@@ -2330,7 +2465,14 @@ def train_meta_model_maml(evaluation_csv="evaluation_result.csv", feature_df=Non
     except Exception as e:
         print(f"[ERROR] MAML Metaモデル学習中に例外発生: {e}")
         return None
-    
+
+def load_meta_model(path="meta_model.pkl"):
+    import joblib
+    if os.path.exists(path):
+        print("[INFO] メタ分類器をロードしました")
+        return joblib.load(path)
+    return None
+
 def generate_via_diffusion(recent_real_numbers, top_k=5):
     generator = DiffusionNumberGenerator()
     generated = generator.generate(num_samples=100)
