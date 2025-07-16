@@ -85,7 +85,7 @@ def git_commit_and_push(file_path, message):
         subprocess.run(["git", "add", file_path], check=True)
         diff = subprocess.run(["git", "diff", "--cached", "--quiet"])
         if diff.returncode != 0:
-            subprocess.run(["git", "config", "--global", "joker7822", "github-actions"], check=True)
+            subprocess.run(["git", "config", "--global", "user.name", "github-actions"], check=True)
             subprocess.run(["git", "config", "--global", "user.email", "github-actions@github.com"], check=True)
             subprocess.run(["git", "commit", "-m", message], check=True)
             subprocess.run(["git", "push"], check=True)
