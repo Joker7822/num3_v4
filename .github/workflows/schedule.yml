@@ -55,7 +55,6 @@ jobs:
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
-
           git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
           git fetch origin
           git stash --include-untracked
@@ -64,7 +63,6 @@ jobs:
           git stash pop || true
 
           git add numbers3.csv
-
           if git diff --cached --quiet; then
             echo "No changes to numbers3.csv"
           else
@@ -75,13 +73,12 @@ jobs:
       - name: Run predictor script
         run: xvfb-run -a python numbers3_predictor.py
 
-      - name: Commit and push prediction results
+      - name: Commit and push Numbers3_predictions.csv immediately
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
-
           git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
           git fetch origin
           git stash --include-untracked
@@ -89,11 +86,31 @@ jobs:
           git pull --rebase origin ${{ github.ref_name }}
           git stash pop || true
 
-          git add Numbers3_predictions.csv evaluation_result.csv evaluation_summary.txt self_predictions.csv
-
+          git add Numbers3_predictions.csv
           if git diff --cached --quiet; then
-            echo "No prediction result changes"
+            echo "No changes to Numbers3_predictions.csv"
           else
-            git commit -m "Auto update prediction results [skip ci]"
+            git commit -m "Auto update Numbers3_predictions.csv [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
+
+      - name: Commit and push remaining prediction results
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
+          git fetch origin
+          git stash --include-untracked
+          git checkout ${{ github.ref_name }}
+          git pull --rebase origin ${{ github.ref_name }}
+          git stash pop || true
+
+          git add evaluation_result.csv evaluation_summary.txt self_predictions.csv
+          if git diff --cached --quiet; then
+            echo "No changes to evaluation-related files"
+          else
+            git commit -m "Auto update evaluation and self prediction files [skip ci]"
             git push origin HEAD:${{ github.ref_name }}
           fi
