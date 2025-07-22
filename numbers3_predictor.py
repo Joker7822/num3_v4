@@ -84,6 +84,32 @@ def calculate_reward(selected_numbers, winning_numbers, cycle_scores):
     reward = match_count * 0.5 + max(0, 1 - avg_cycle_score / 50)
     return reward
 
+def patchwise_structural_loss(pred, target, patch_size=3):
+    loss = 0.0
+    for i in range(0, pred.shape[1] - patch_size + 1):
+        p_patch = pred[:, i:i+patch_size]
+        t_patch = target[:, i:i+patch_size]
+        loss += F.mse_loss(p_patch.mean(1), t_patch.mean(1))
+        loss += F.mse_loss(p_patch.std(1), t_patch.std(1))
+    return loss / (pred.shape[1] - patch_size + 1)
+    
+def export_model_to_onnx(model, dummy_input, onnx_path, input_name="input", output_name="output"):
+    model.eval()
+    torch.onnx.export(
+        model.cpu(), dummy_input.cpu(), onnx_path,
+        input_names=[input_name],
+        output_names=[output_name],
+        opset_version=17,
+        dynamic_axes={input_name: {0: "batch_size"}}
+    )
+    print(f"[INFO] ONNX変換完了: {onnx_path}")
+
+def onnx_infer(onnx_path, input_array, input_name="input"):
+    session = ort.InferenceSession(onnx_path)
+    inputs = {input_name: input_array.astype(np.float32)}
+    outputs = session.run(None, inputs)
+    return outputs[0]
+        
 class LotoEnv(gym.Env):
     def __init__(self, historical_numbers):
         super(LotoEnv, self).__init__()
@@ -285,31 +311,73 @@ class LotoGAN(nn.Module):
         )
         self.noise_dim = noise_dim
 
+        # ONNX推論対応
+        self.use_onnx = False
+        self.ort_session = None
+
     def generate_samples(self, num_samples):
         noise = torch.randn(num_samples, self.noise_dim)
-        with torch.no_grad():
-            samples = self.generator(noise)
-        return samples.numpy()
+
+        if self.use_onnx and self.ort_session:
+            latent_np = noise.numpy().astype(np.float32)
+            scores = self.ort_session.run(None, {"latent": latent_np})[0]
+            return scores  # shape = (num_samples, 1)
+        else:
+            with torch.no_grad():
+                samples = self.generator(noise)
+            return samples.numpy()
 
     def evaluate_generated_numbers(self, sample_tensor):
         """
-        sample_tensor: shape=(10,) のTensor（0〜1値で各数字のスコア）
-        上位3つを選んで番号に変換 → 判別器スコアと構造スコアを合成
+        ONNXに乗せられる処理に限定して合成スコアを出力
+        sample_tensor: shape=(10,) のTensor
         """
         if not isinstance(sample_tensor, torch.Tensor):
             sample_tensor = torch.tensor(sample_tensor, dtype=torch.float32)
-
         sample_tensor = sample_tensor.to(self.discriminator[0].weight.device)
 
-        numbers = list(np.argsort(sample_tensor.cpu().numpy())[-3:])
-        numbers.sort()
-        real_score = score_real_structure_similarity(numbers)
+        top3 = torch.topk(sample_tensor, k=3).values
+        approx_structure_score = top3.mean().item()
 
         with torch.no_grad():
-            discriminator_score = self.discriminator(sample_tensor.unsqueeze(0)).item()
+            disc_score = self.discriminator(sample_tensor.unsqueeze(0)).item()
 
-        final_score = 0.5 * discriminator_score + 0.5 * real_score
-        return final_score  # これは float 型
+        return 0.5 * disc_score + 0.5 * approx_structure_score
+
+class LotoGANFullONNX(nn.Module):
+    def __init__(self, generator, discriminator):
+        super().__init__()
+        self.generator = generator
+        self.discriminator = discriminator
+
+    def forward(self, latent):
+        x = self.generator(latent)                 # (batch, 10)
+        top3 = torch.topk(x, k=3, dim=1).values    # (batch, 3)
+        struct_score = top3.mean(dim=1, keepdim=True)  # (batch, 1)
+        disc_score = self.discriminator(x)         # (batch, 1)
+        final = 0.5 * struct_score + 0.5 * disc_score  # (batch, 1)
+        return final
+
+def export_lotogan_full_to_onnx(gan, path="lotogan_full.onnx"):
+    wrapper = LotoGANFullONNX(gan.generator, gan.discriminator).eval()
+    dummy = torch.randn(1, gan.noise_dim)
+    torch.onnx.export(
+        wrapper,
+        dummy,
+        path,
+        input_names=["latent"],
+        output_names=["score"],
+        opset_version=17,
+        dynamic_axes={"latent": {0: "batch"}, "score": {0: "batch"}}
+    )
+    print(f"[INFO] LotoGAN ONNXモデル保存: {path}")
+
+def run_lotogan_onnx(latent_np, path="lotogan_full.onnx"):
+    if latent_np.ndim == 1:
+        latent_np = latent_np.reshape(1, -1)
+    session = ort.InferenceSession(path)
+    score = session.run(None, {"latent": latent_np.astype(np.float32)})
+    return score[0]  # shape = (batch, 1)
 
 class DiffusionNumberGenerator(nn.Module):
     def __init__(self, noise_dim=16, steps=100):
@@ -792,6 +860,49 @@ class GPT3Numbers(nn.Module):
         out = self.fc_out(decoded)  # (seq_len, batch, vocab_size)
         return out  # 各桁の logits（softmax不要）
 
+class GPT3NumbersONNXWrapper(nn.Module):
+    def __init__(self, gpt_model):
+        super().__init__()
+        self.gpt = gpt_model
+
+    def forward(self, tgt, memory):
+        return self.gpt(tgt, memory)
+
+def export_gpt3numbers_to_onnx(model, onnx_path="gpt3numbers.onnx"):
+    wrapper = GPT3NumbersONNXWrapper(model).eval()
+
+    seq_len = 3
+    batch = 1
+    embed_dim = model.embedding.embedding_dim
+    memory_len = 10
+
+    dummy_tgt = torch.randint(0, model.vocab_size, (seq_len, batch), dtype=torch.long)
+    dummy_memory = torch.randn(memory_len, batch, embed_dim)
+
+    torch.onnx.export(
+        wrapper,
+        (dummy_tgt, dummy_memory),
+        onnx_path,
+        input_names=["tgt", "memory"],
+        output_names=["output"],
+        opset_version=17,
+        dynamic_axes={
+            "tgt": {0: "seq_len", 1: "batch"},
+            "memory": {0: "memory_len", 1: "batch"},
+            "output": {0: "seq_len", 1: "batch"}
+        }
+    )
+    print(f"[INFO] GPT3Numbers ONNX変換完了: {onnx_path}")
+
+def run_gpt3numbers_onnx(onnx_path, tgt_tensor, memory_tensor):
+    session = ort.InferenceSession(onnx_path)
+    inputs = {
+        "tgt": tgt_tensor.numpy().astype(np.int64),
+        "memory": memory_tensor.numpy().astype(np.float32)
+    }
+    outputs = session.run(None, inputs)
+    return outputs[0]  # (seq_len, batch, vocab_size)
+
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=50):
         super().__init__()
@@ -825,7 +936,8 @@ def build_memory_from_history(history_sequences, encoder, device):
 def train_gpt3numbers_model_with_memory(
     save_path="gpt3numbers.pth",
     encoder_path="memory_encoder_3.pth",
-    epochs=50
+    epochs=50,
+    alpha=0.3  # PS-Lossの重み
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -842,7 +954,6 @@ def train_gpt3numbers_model_with_memory(
         print(f"[ERROR] 学習データ読み込みエラー: {e}")
         return decoder, encoder
 
-    # 学習データ（1〜2桁 → 次の1桁）
     data = []
     for seq in sequences:
         for i in range(1, 3):
@@ -869,7 +980,9 @@ def train_gpt3numbers_model_with_memory(
             output = decoder(tgt, memory)
             last_output = output[-1, 0].unsqueeze(0)
 
-            loss = criterion(last_output, target_tensor)
+            ce_loss = criterion(last_output, target_tensor)
+            ps_loss = patchwise_structural_loss(last_output, target_tensor)
+            loss = ce_loss + alpha * ps_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -884,7 +997,7 @@ def train_gpt3numbers_model_with_memory(
     print(f"[INFO] GPT3Numbers 保存: {save_path}")
     print(f"[INFO] MemoryEncoder 保存: {encoder_path}")
     return decoder, encoder
-
+    
 def gpt_generate_predictions_with_memory_3(decoder, encoder, history_sequences, num_samples=5):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     decoder.eval()
@@ -1032,28 +1145,35 @@ def predict_with_tabm(X_df, num_predictions=10):
 
 def predict_with_gan(gan_model, num_predictions=10):
     try:
-        # GANから複数サンプル生成（各サンプルは [0-1] の10次元ベクトル）
-        samples = gan_model.generate_samples(num_predictions * 2)
-
         results = []
-        for sample in samples:
-            # 重要度の高いインデックスを3つ選ぶ（＝出現確率が高い数字）
-            top3 = sorted(np.argsort(sample)[-3:])
-            if len(set(top3)) != 3:
-                continue
 
-            # 評価スコアを付ける（モデルに評価関数があると仮定）
-            if hasattr(gan_model, "evaluate_generated_numbers"):
-                score = gan_model.evaluate_generated_numbers(torch.tensor(sample))
-            else:
-                score = float(np.mean(sample[top3]))
+        if getattr(gan_model, "use_onnx", False) and gan_model.ort_session:
+            # --- ONNX経由でスコアのみ取得 ---
+            latent = np.random.randn(num_predictions * 3, gan_model.noise_dim).astype(np.float32)
+            scores = gan_model.ort_session.run(None, {"latent": latent})[0]  # shape: (N, 1)
+            scores = scores.flatten()
 
-            results.append((top3, score))
+            for i, score in enumerate(scores):
+                # Top3番号の情報がないため、ダミー番号を返す（オプションで再構成可）
+                results.append(([0, 1, 2], float(score)))  # ← 固定値。必要なら戻す
 
-            if len(results) >= num_predictions:
-                break
+        else:
+            # --- 通常のPyTorch推論 ---
+            samples = gan_model.generate_samples(num_predictions * 3)
 
-        return results
+            for sample in samples:
+                top3 = sorted(np.argsort(sample)[-3:])
+                if len(set(top3)) != 3:
+                    continue
+                if hasattr(gan_model, "evaluate_generated_numbers"):
+                    score = gan_model.evaluate_generated_numbers(torch.tensor(sample))
+                else:
+                    score = float(np.mean(sample[top3]))
+                results.append((top3, float(score)))
+
+        # スコアで上位を選抜
+        results = sorted(results, key=lambda x: -x[1])
+        return results[:num_predictions]
 
     except Exception as e:
         print(f"[GAN ERROR] {e}")
@@ -1200,7 +1320,7 @@ class LotoPredictor:
         self.lstm_model.to(device)
         self.lstm_model.eval()
         with torch.no_grad():
-            outputs = self.lstm_model(X_tensor)[:3]
+            outputs = self.lstm_model(X_tensor.half())[:3]
             lstm_preds = [torch.argmax(out, dim=1).cpu().numpy() for out in outputs]
         lstm_preds = np.array(lstm_preds).T
 
@@ -1277,10 +1397,43 @@ class LotoPredictor:
                 "source": c.get("source", "Unknown")
             })
 
-        sorted_candidates = sorted(candidates, key=lambda x: -x["score"])
-        final = [(c["numbers"], c["confidence"]) for c in sorted_candidates[:num_candidates]]
+        # === メタモデルによるスコア統合 ===
+        try:
+            meta_bundle = joblib.load("meta_model.pkl")  # {'model': ..., 'encoder': ...}
+            meta_model = meta_bundle["model"]
+            encoder = meta_bundle["encoder"]
 
-        # 最低構成保証（ストレート等級）
+            meta_df = pd.DataFrame(candidates)
+            meta_df["構造スコア"] = meta_df["numbers"].apply(score_real_structure_similarity)
+            meta_df["出力元"] = meta_df["source"]
+            meta_df["信頼度"] = meta_df["confidence"]
+
+            if "出力元" in meta_df.columns:
+                source_encoded = encoder.transform(meta_df[["出力元"]])
+                source_cols = [f"出力元_{cat}" for cat in encoder.categories_[0]]
+                X_meta = pd.concat([
+                    meta_df[["構造スコア", "信頼度"]].reset_index(drop=True),
+                    pd.DataFrame(source_encoded, columns=source_cols)
+                ], axis=1)
+            else:
+                X_meta = meta_df[["構造スコア", "信頼度"]]
+
+            preds = meta_model.predict(X_meta)
+            meta_df["score"] = preds
+
+        except Exception as e:
+            print(f"[WARNING] メタモデルスコア統合失敗: {e}")
+            meta_df = pd.DataFrame(candidates)
+            meta_df["score"] = (
+                0.4 * meta_df["numbers"].apply(score_real_structure_similarity) +
+                0.3 * meta_df["confidence"] +
+                0.3 * meta_df["numbers"].apply(lambda n: 1 - np.mean([cycle_scores.get(x, 99)/100 for x in n]))
+            )
+
+        # === 最終スコア順に抽出・構造保証 ===
+        meta_df = meta_df.sort_values(by="score", ascending=False).head(num_candidates)
+        final = list(zip(meta_df["numbers"].tolist(), meta_df["confidence"].tolist()))
+
         final = enforce_grade_structure(final, min_required=3)
         return final, [conf for _, conf in final]
 
@@ -2459,19 +2612,50 @@ def create_meta_training_data(evaluation_df, feature_df):
 
     return features.values, target
 
-def train_meta_model(X, confidence_scores, match_scores, source_labels):
-    from sklearn.ensemble import GradientBoostingRegressor
-    import joblib
+def train_meta_model(X, confidence_scores, match_scores, source_labels, model_path="meta_model.pkl"):
+
+    # 入力整形
+    if not isinstance(X, pd.DataFrame):
+        X = pd.DataFrame(X)
+
+    X = X.copy()
     X["出力元"] = source_labels
     X["信頼度"] = confidence_scores
-    X["構造スコア"] = X.apply(lambda row: score_real_structure_similarity(row["numbers"]), axis=1)
-    # 必要なら周期スコア等も追加
 
-    y = match_scores  # 実際の一致数
+    # 構造スコアの導入（関数が別途定義されている必要あり）
+    if "構造スコア" not in X.columns:
+        if "numbers" in X.columns:
+            X["構造スコア"] = X["numbers"].apply(score_real_structure_similarity)
+        else:
+            X["構造スコア"] = 0.0  # fallback
 
-    model = GradientBoostingRegressor()
-    model.fit(X, y)
-    joblib.dump(model, "meta_model.pkl")
+    # One-hot encode 出力元
+    encoder = OneHotEncoder(sparse=False, handle_unknown="ignore")
+    source_encoded = encoder.fit_transform(X[["出力元"]])
+    source_cols = [f"出力元_{cat}" for cat in encoder.categories_[0]]
+    X_encoded = pd.concat([
+        X.drop(columns=["出力元"]),
+        pd.DataFrame(source_encoded, columns=source_cols, index=X.index)
+    ], axis=1)
+
+    # ターゲット
+    y = np.array(match_scores)
+
+    # モデル構築
+    model = GradientBoostingRegressor(
+        n_estimators=100,
+        learning_rate=0.1,
+        max_depth=3,
+        random_state=42
+    )
+    model.fit(X_encoded, y)
+
+    # モデル保存
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_file = model_path.replace(".pkl", f"_{timestamp}.pkl")
+    joblib.dump({"model": model, "encoder": encoder}, model_file)
+
+    print(f"[INFO] メタモデル保存: {model_file}")
     return model
 
 def filter_by_cycle_score(predictions, cycle_scores, threshold=30):
