@@ -2,6 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import numpy as np
+import ast
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
@@ -37,6 +38,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import optuna
 import matplotlib
+import lightgbm as lgb
 matplotlib.use('Agg')  # ← ★ この行を先に追加！
 import matplotlib.pyplot as plt
 import aiohttp
@@ -1189,6 +1191,16 @@ def predict_with_gan(gan_model, num_predictions=10):
     except Exception as e:
         print(f"[GAN ERROR] {e}")
         return []
+    
+def is_valid_numbers(nums):
+        return isinstance(nums, (list, tuple)) and len(nums) == 3 and all(0 <= n <= 9 for n in nums) and len(set(nums)) == 3
+
+def calculate_candidate_score(struct_score, conf, cycle):
+        return (
+            0.4 * struct_score +
+            0.3 * conf +
+            0.3 * (1 - cycle / 100)
+        )
 
 class LotoPredictor:
     def __init__(self, input_size, hidden_size):
@@ -1319,16 +1331,6 @@ class LotoPredictor:
         # === 最終件数確認
         data = data.drop_duplicates(subset=["抽せん日", "本数字"])
         print(f"[INFO] 🔢 学習データ最終件数: {original_len} → {len(data)} 件")
-
-    def is_valid_numbers(nums):
-        return isinstance(nums, (list, tuple)) and len(nums) == 3 and all(0 <= n <= 9 for n in nums) and len(set(nums)) == 3
-
-    def calculate_candidate_score(struct_score, conf, cycle):
-        return (
-            0.4 * struct_score +
-            0.3 * conf +
-            0.3 * (1 - cycle / 100)
-        )
 
     def predict(self, latest_data, num_candidates=50):
         print("[INFO] Numbers3予測開始")
