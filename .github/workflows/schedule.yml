@@ -1,48 +1,35 @@
-name: Lotto Predictor CI
+name: Manual Run Lotto Predictor
+
 on:
-  schedule:
-    - cron: '0 11 * * 1-5'  # JST 20:00（UTC 11:00）、月〜金
   workflow_dispatch:
+    inputs:
+      script_name:
+        description: '実行スクリプトを選択'
+        required: true
+        default: 'run_model_evolution.py'
+        type: choice
+        options:
+          - run_model_evolution.py
+          - optimize_all_models.py
 
 jobs:
-  run-scraper:
+  run-lotto-script:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-jobs:
-  run-lotto:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: 📥 リポジトリをチェックアウト
+      - name: リポジトリをチェックアウト
         uses: actions/checkout@v3
 
-      - name: 🐍 Python セットアップ
+      - name: Python セットアップ
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: 📦 依存関係をインストール
+      - name: 必要なライブラリをインストール
         run: |
-          python -m pip install --upgrade pip
-          pip install pandas numpy autogluon optuna
+          pip install -r requirements.txt
 
-      - name: 🧪 モデルをトレーニング・予測
+      - name: スクリプト実行
         run: |
-          python lotto_predictor/scripts/run_model_evolution.py
-
-      - name: 📤 予測結果をコミット & プッシュ（オプション）
-        run: |
-          git config --global user.name 'github-actions'
-          git config --global user.email 'github-actions@github.com'
-          git add .
-          git commit -m "Auto update predictions [CI]" || echo "No changes to commit"
-          git push
+          echo "Running ${{ github.event.inputs.script_name }}"
+          python lotto_predictor/scripts/${{ github.event.inputs.script_name }}
