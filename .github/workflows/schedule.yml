@@ -25,9 +25,11 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 必要なライブラリをインストール
-        run: |
-          pip install -r requirements.txt
+      - name: Install core dependencies
+        run: pip install -r requirements_core.txt
+
+      - name: Install heavy dependencies
+        run: pip install -r requirements_heavy.txt
 
       - name: スクリプト実行
         run: |
