@@ -1,29 +1,44 @@
-name: Manual Run Lotto Predictor
+name: Auto Scrape Numbers3_v5
 
 on:
+  schedule:
+    - cron: '0 11 * * 1-5'  # JST 20:00（UTC 11:00）、月〜金
   workflow_dispatch:
-    inputs:
-      script_name:
-        description: '実行スクリプトを選択'
-        required: true
-        default: 'run_model_evolution.py'
-        type: choice
-        options:
-          - run_model_evolution.py
-          - optimize_all_models.py
 
 jobs:
-  run-lotto-script:
+  run-scraper:
     runs-on: ubuntu-latest
 
     steps:
-      - name: リポジトリをチェックアウト
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Python セットアップ
-        uses: actions/setup-python@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+
+      - name: Install dependencies and headless Chrome
+        run: |
+          sudo apt update
+          sudo apt install -y wget unzip xvfb \
+            libglib2.0-0 libnss3 libxi6 libxcomposite1 libxss1 \
+            libatk-bridge2.0-0 libgtk-3-0 libasound2t64
+
+          # Install Chrome
+          wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chrome-linux64.zip
+          unzip chrome-linux64.zip
+          sudo mv chrome-linux64 /opt/chrome
+          sudo ln -sf /opt/chrome/chrome /usr/bin/google-chrome
+
+          # Install ChromeDriver
+          wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chromedriver-linux64.zip
+          unzip chromedriver-linux64.zip
+          sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
+          sudo chmod +x /usr/local/bin/chromedriver
+
+      - name: Downgrade pip to stable version
+        run: python -m pip install pip==23.3.1
 
       - name: Install core dependencies
         run: pip install -r requirements_core.txt
@@ -31,7 +46,50 @@ jobs:
       - name: Install heavy dependencies
         run: pip install -r requirements_heavy.txt
 
-      - name: スクリプト実行
+      - name: Run scraping script
+        run: xvfb-run -a python scrapingnumbers3.py
+
+      - name: Commit and push numbers3.csv if changed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Running ${{ github.event.inputs.script_name }}"
-          python scripts/${{ github.event.inputs.script_name }}
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
+          git fetch origin
+          git stash --include-untracked
+          git checkout ${{ github.ref_name }}
+          git pull --rebase origin ${{ github.ref_name }}
+          git stash pop || true
+
+          git add numbers3.csv
+          if git diff --cached --quiet; then
+            echo "No changes to numbers3.csv"
+          else
+            git commit -m "Auto update numbers3.csv [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
+
+      - name: Run walkforward trainer
+        run: xvfb-run -a python walkforward_trainer.py
+
+      - name: Commit and push models and prediction results
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
+          git fetch origin
+          git stash --include-untracked
+          git checkout ${{ github.ref_name }}
+          git pull --rebase origin ${{ github.ref_name }}
+          git stash pop || true
+
+          git add models/ walkforward_eval/
+          if git diff --cached --quiet; then
+            echo "No changes to models or evaluations"
+          else
+            git commit -m "Auto update models and walkforward predictions [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
