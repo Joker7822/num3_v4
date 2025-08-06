@@ -1682,13 +1682,17 @@ def evaluate_and_summarize_predictions(
     output_csv="evaluation_result.csv",
     output_txt="evaluation_summary.txt"
 ):
+    import pandas as pd
+    from collections import Counter
+    from datetime import datetime
+
     try:
         pred_df = pd.read_csv(pred_file)
         actual_df = pd.read_csv(actual_file)
         actual_df['抽せん日'] = pd.to_datetime(actual_df['抽せん日'], errors='coerce').dt.date
         pred_df['抽せん日'] = pd.to_datetime(pred_df['抽せん日'], errors='coerce').dt.date
 
-        # ✅ 未来データの除外（本日より後の抽せん日を含む予測は対象外）
+        # ✅ 未来データの除外
         today = datetime.now().date()
         future_preds = pred_df[pred_df['抽せん日'] > today]
         if not future_preds.empty:
@@ -1697,7 +1701,8 @@ def evaluate_and_summarize_predictions(
 
     except Exception as e:
         print(f"[ERROR] ファイル読み込み失敗: {e}")
-  
+        return
+
     evaluation_results = []
     grade_counter = Counter()
     source_grade_counter = Counter()
@@ -1766,8 +1771,8 @@ def evaluate_and_summarize_predictions(
     lines.append(f"的中率（等級ベース）: {rate:.2f}%")
     lines.append("✓ 的中率は目標を達成しています。" if rate >= 10 else "✘ 的中率は目標に達していません。")
 
-    # 各予測の損益
     box_prize, straight_prize, cost_per_draw = 15000, 105000, 400
+
     for i in range(1, 6):
         lines.append(f"\n== 等級別予想{i}集計 ==")
         for g in grade_list:
@@ -1793,7 +1798,6 @@ def evaluate_and_summarize_predictions(
         lines.append(f"コスト: ¥{cost:,}")
         lines.append(f"損益: {'+' if profit >= 0 else '-'}¥{abs(profit):,}")
 
-    # 全体損益
     box_total = grade_counter["ボックス"] * box_prize
     straight_total = grade_counter["ストレート"] * straight_prize
     all_reward = box_total + straight_total
@@ -1804,11 +1808,15 @@ def evaluate_and_summarize_predictions(
     lines.append(f"総コスト: ¥{total_cost:,}")
     lines.append(f"最終損益: {'+' if profit >= 0 else '-'}¥{abs(profit):,}")
 
-    # 2025-07-01以降の各予測の集計 ===
+    # 2025-06-01以降の各予測の集計
     lines.append("\n== 🆕 2025-06-01以降の各予測集計 ==")
     target_date = datetime(2025, 6, 1).date()
 
     for i in range(1, 6):
+        if "予測番号インデックス" not in eval_df.columns:
+            lines.append(f"\n[WARNING] '予測番号インデックス' 列が存在しません → 予測{i}の集計スキップ")
+            continue
+
         subset = eval_df[
             (eval_df["予測番号インデックス"] == f"予測{i}") &
             (pd.to_datetime(eval_df["抽せん日"], errors='coerce').dt.date >= target_date)
@@ -1834,60 +1842,29 @@ def evaluate_and_summarize_predictions(
         lines.append(f"的中率: {acc:.2f}%")
         lines.append(f"賞金: ¥{total_reward:,}, コスト: ¥{cost:,}, 損益: {'+' if profit >= 0 else '-'}¥{abs(profit):,}")
 
-    # 出力元別的中率
-    lines.append("\n== 出力元別的中率（予測1・2のみ） ==")
-    source_hit_counter = Counter()
-    source_total_counter = Counter()
-    for _, row in eval_df.iterrows():
-        if row["予測番号インデックス"] in ["予測1", "予測2"]:
-            source = row["出力元"]
-            grade = row["等級"]
-            source_total_counter[source] += 1
-            if grade in ["ボックス", "ストレート"]:
-                source_hit_counter[source] += 1
-
-    for source in sorted(source_total_counter):
-        total = source_total_counter[source]
-        hit = source_hit_counter[source]
-        rate = (hit / total * 100) if total > 0 else 0
-        lines.append(f"{source}: {hit} / {total} 件 （{rate:.2f}%）")
-
-    # 当選日一覧（☆付きのみ表示）
-    for i in range(1, 6):
-        lines.append(f"\n当選日一覧予想{i}（☆付きのみ）")
-        for detail in results_by_prediction[i]["details"]:
-            try:
-                date_str = detail.split(",")[0].replace("☆", "").strip()
-                draw_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                if draw_date >= datetime(2025, 7, 1).date():
-                    prefix = "☆"
-                    lines.append(prefix + detail)
-            except Exception:
-                continue  # パースに失敗した行はスキップ
-
     # 出力
     with open(output_txt, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     print(f"[INFO] 集計結果を {output_txt} に出力しました（{matched} 件の的中）")
 
-    # 高一致予測を self_predictions.csv に保存（7列構成で再学習可能な形式）
+    # 高一致予測の保存
     try:
-        matched = eval_df[(eval_df["一致数"] >= 3)]
-        if not matched.empty:
-            rows = []
-            for _, row in matched.iterrows():
-                pred = eval(row["予測番号"]) if isinstance(row["予測番号"], str) else row["予測番号"]
-                if isinstance(pred, list) and len(pred) == 3:
-                    d1, d2, d3 = pred
-                    conf = row["信頼度"] if "信頼度" in row else 1.0
-                    match = row["一致数"]
-                    grade = row["等級"]
-                    rows.append([d1, d2, d3, conf, match, grade])
-            # 保存（ヘッダーなし）
-            pd.DataFrame(rows).to_csv("self_predictions.csv", index=False, header=False)
-            print(f"[INFO] self_predictions.csv に保存: {len(rows)}件")
-        else:
-            print("[INFO] 高一致予測は存在しません（保存スキップ）")
+        if "一致数" in eval_df.columns:
+            matched_df = eval_df[eval_df["一致数"] >= 3]
+            if not matched_df.empty:
+                rows = []
+                for _, row in matched_df.iterrows():
+                    pred = eval(row["予測番号"]) if isinstance(row["予測番号"], str) else row["予測番号"]
+                    if isinstance(pred, list) and len(pred) == 3:
+                        d1, d2, d3 = pred
+                        conf = row.get("信頼度", 1.0)
+                        match = row.get("一致数", 0)
+                        grade = row.get("等級", "-")
+                        rows.append([d1, d2, d3, conf, match, grade])
+                pd.DataFrame(rows).to_csv("self_predictions.csv", index=False, header=False)
+                print(f"[INFO] self_predictions.csv に保存: {len(rows)}件")
+            else:
+                print("[INFO] 高一致予測は存在しません（保存スキップ）")
     except Exception as e:
         print(f"[WARNING] self_predictions.csv 保存エラー: {e}")
         
@@ -2835,5 +2812,6 @@ if __name__ == "__main__":
     bulk_predict_all_past_draws()
     # main_with_improved_predictions()
     
+
 
 
