@@ -10,6 +10,17 @@ import torch
 import onnxruntime
 import numpy as np
 from autogluon.tabular import TabularPredictor
+import subprocess
+
+# === GitHub Push 関数 ===
+def push_model_to_github(commit_msg="Auto model update"):
+    try:
+        subprocess.run(["git", "add", "models/"], check=True)
+        subprocess.run(["git", "commit", "-m", commit_msg], check=True)
+        subprocess.run(["git", "push"], check=True)
+        print("[GIT] モデルフォルダをGitHubにプッシュしました。")
+    except subprocess.CalledProcessError as e:
+        print(f"[GIT ERROR] push 失敗: {e}")
 
 # === 設定 ===
 MIN_TRAIN_SIZE = 30
@@ -66,6 +77,9 @@ for i in range(MIN_TRAIN_SIZE, len(data)):
                 model_path = os.path.join(ag_dir, f"digit{idx}")
                 model.save(model_path)
                 print(f"[INFO] AutoGluonモデル {idx} を保存: {model_path}")
+
+        # === GitHubにPush ===
+        push_model_to_github(f"Model update for draw date {draw_date.date()}")
 
     except Exception as e:
         print(f"[ERROR] {draw_date.date()} の処理中にエラー: {e}")
