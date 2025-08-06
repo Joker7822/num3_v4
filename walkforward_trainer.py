@@ -34,6 +34,36 @@ for i in range(MIN_TRAIN_SIZE, len(data)):
         predictor.train_model(train_df, reference_date=draw_date)
         predictions, _ = predictor.predict(test_df)
         save_predictions_to_csv(predictions, draw_date, filename=PRED_FILE, model_name="WalkF")
+
+        # === モデル保存（LSTM / AutoGluon） ===
+        today = datetime.now().strftime("%Y%m%d")
+
+        # LSTM → ONNX保存
+        lstm_dir = f"models/lstm/{today}/"
+        os.makedirs(lstm_dir, exist_ok=True)
+        onnx_path = os.path.join(lstm_dir, "lstm_model.onnx")
+        import torch
+        dummy_input = torch.randn(1, 1, predictor.input_size)
+        torch.onnx.export(
+            predictor.lstm_model,
+            dummy_input,
+            onnx_path,
+            input_names=["input"],
+            output_names=["output"],
+            dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+            opset_version=12
+        )
+        print(f"[INFO] LSTMモデルをONNX形式で保存: {onnx_path}")
+
+        # AutoGluon保存
+        ag_dir = f"models/autogluon/{today}/"
+        os.makedirs(ag_dir, exist_ok=True)
+        for idx, model in enumerate(predictor.regression_models):
+            if model:
+                model_path = os.path.join(ag_dir, f"digit{idx}")
+                model.save(model_path)
+                print(f"[INFO] AutoGluonモデル {idx} を保存: {model_path}")
+
     except Exception as e:
         print(f"[ERROR] {draw_date.date()} の処理中にエラー: {e}")
         continue
