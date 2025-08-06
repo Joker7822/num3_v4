@@ -6,6 +6,10 @@ from numbers3_predictor import (
     save_predictions_to_csv,
     evaluate_and_summarize_predictions
 )
+import torch
+import onnxruntime
+import numpy as np
+from autogluon.tabular import TabularPredictor
 
 # === 設定 ===
 MIN_TRAIN_SIZE = 30
@@ -42,7 +46,6 @@ for i in range(MIN_TRAIN_SIZE, len(data)):
         lstm_dir = f"models/lstm/{today}/"
         os.makedirs(lstm_dir, exist_ok=True)
         onnx_path = os.path.join(lstm_dir, "lstm_model.onnx")
-        import torch
         dummy_input = torch.randn(1, 1, predictor.input_size)
         torch.onnx.export(
             predictor.lstm_model,
@@ -83,3 +86,42 @@ if os.path.exists(EVAL_FILE):
 if os.path.exists(PRED_FILE):
     os.rename(PRED_FILE, backup_pred)
     print(f"[INFO] 予測ログをバックアップ保存: {backup_pred}")
+
+# === 保存済みモデルからの推論関数 ===
+def predict_with_saved_models(lstm_path, autogluon_dir, input_data):
+    """
+    lstm_path: ONNXファイルへのパス
+    autogluon_dir: 各桁のAutoGluonモデルが格納されたディレクトリ
+    input_data: shape=(1, feature_dim) の np.array または pd.DataFrame
+    """
+    # LSTM推論
+    try:
+        sess = onnxruntime.InferenceSession(lstm_path)
+        input_name = sess.get_inputs()[0].name
+        lstm_out = sess.run(None, {input_name: input_data.reshape(1, 1, -1).astype(np.float32)})
+        lstm_preds = [int(np.argmax(out)) for out in lstm_out[:3]]
+    except Exception as e:
+        print(f"[ERROR] LSTMモデル推論失敗: {e}")
+        lstm_preds = [0, 0, 0]
+
+    # AutoGluon推論
+    try:
+        if isinstance(input_data, np.ndarray):
+            input_df = pd.DataFrame(input_data, columns=[f"f{i}" for i in range(input_data.shape[1])])
+        else:
+            input_df = input_data
+
+        auto_preds = []
+        for i in range(3):
+            model_path = os.path.join(autogluon_dir, f"digit{i}")
+            predictor = TabularPredictor.load(model_path)
+            pred = predictor.predict(input_df).values[0]
+            auto_preds.append(int(pred))
+    except Exception as e:
+        print(f"[ERROR] AutoGluonモデル推論失敗: {e}")
+        auto_preds = [0, 0, 0]
+
+    # 結果を平均的に統合
+    final = [int(round((l + a) / 2)) for l, a in zip(lstm_preds, auto_preds)]
+    print(f"[PREDICT] 統合予測結果: {final}")
+    return final
