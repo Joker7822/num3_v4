@@ -1118,6 +1118,44 @@ class LotoPredictor:
                 print(f"[INFO] ✅ 過去評価から一致2+の予測再学習: {len(synthetic_rows_eval)}件")
             else:
                 print("[INFO] 一致数2以上の再学習用データは見つかりませんでした")
+            # === 特徴量の前処理 ===
+        X, y, scaler = preprocess_data(data)
+        if X is None:
+            print("[ERROR] 特徴量生成に失敗しました。")
+            return
+
+        self.scaler = scaler
+        self.feature_names = [f"f{i}" for i in range(X.shape[1])]  # 特徴名設定
+
+        # === LSTM モデルの訓練 ===
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.lstm_model = train_lstm_model(
+            torch.tensor(X, dtype=torch.float32).reshape(-1, 1, X.shape[1]),
+            torch.tensor(y, dtype=torch.float32),
+            input_size=X.shape[1],
+            device=device
+        )
+
+        # === AutoGluon モデル（各桁）を訓練 ===
+        import pandas as pd
+        from autogluon.tabular import TabularPredictor
+        X_df = pd.DataFrame(X, columns=self.feature_names)
+        y1, y2, y3 = transform_to_digit_labels(data["本数字"])
+        y_all = [y1, y2, y3]
+        today_str = datetime.now().strftime("%Y%m%d")
+        model_dir_base = f"models/autogluon/{today_str}/"
+        os.makedirs(model_dir_base, exist_ok=True)
+
+        for i in range(3):
+            model_path = os.path.join(model_dir_base, f"digit{i}")
+            os.makedirs(model_path, exist_ok=True)
+            predictor = TabularPredictor(label="target", path=model_path, verbosity=0)
+            train_df = X_df.copy()
+            train_df["target"] = y_all[i]
+            predictor.fit(train_df, presets="best_quality", time_limit=60)
+            self.regression_models[i] = predictor
+
+        print("[INFO] LSTMとAutoGluonモデルの訓練が完了しました。")
 
     def predict(self, latest_data, num_candidates=50):
         print("[INFO] Numbers3予測開始")
@@ -2797,4 +2835,5 @@ if __name__ == "__main__":
     bulk_predict_all_past_draws()
     # main_with_improved_predictions()
     
+
 
