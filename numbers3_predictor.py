@@ -1321,14 +1321,19 @@ def calculate_precision_recall_f1(evaluation_df):
 # 予測結果をCSVファイルに保存する関数
 def save_predictions_to_csv(predictions, drawing_date, filename="Numbers3_predictions.csv", model_name="Unknown"):
     drawing_date = pd.to_datetime(drawing_date).strftime("%Y-%m-%d")
-    row = {"抽せん日": drawing_date}
+    rows = []
 
     for i, (numbers, confidence) in enumerate(predictions[:5], 1):
-        row[f"予測{i}"] = ', '.join(map(str, numbers))
-        row[f"信頼度{i}"] = round(confidence, 3)
-        row[f"出力元{i}"] = model_name  # ✅ モデル名を記録
+        row = {
+            "抽せん日": drawing_date,
+            "予測": ', '.join(map(str, numbers)),
+            "信頼度": round(confidence, 3),
+            "出力元": model_name,
+            "予測番号インデックス": f"予測{i}"
+        }
+        rows.append(row)
 
-    df = pd.DataFrame([row])
+    df = pd.DataFrame(rows)
 
     if os.path.exists(filename):
         try:
@@ -1337,7 +1342,8 @@ def save_predictions_to_csv(predictions, drawing_date, filename="Numbers3_predic
             df = pd.concat([existing_df, df], ignore_index=True)
         except Exception as e:
             print(f"[ERROR] CSV読み込み失敗: {e} → 新規作成")
-            df = pd.DataFrame([row])
+            # fallback: 書き込み行だけで保存
+            df = pd.DataFrame(rows)
 
     df.to_csv(filename, index=False, encoding='utf-8-sig')
     print(f"[INFO] {model_name} の予測結果を {filename} に保存しました。")
@@ -2791,3 +2797,4 @@ if __name__ == "__main__":
     bulk_predict_all_past_draws()
     # main_with_improved_predictions()
     
+
