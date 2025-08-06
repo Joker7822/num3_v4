@@ -32,4 +32,4 @@ jobs:
       - name: スクリプト実行
         run: |
           echo "Running ${{ github.event.inputs.script_name }}"
-          python lotto_predictor/scripts/${{ github.event.inputs.script_name }}
+          python scripts/${{ github.event.inputs.script_name }}
