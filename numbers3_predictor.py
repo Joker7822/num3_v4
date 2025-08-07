@@ -689,11 +689,10 @@ class LotoLSTM(nn.Module):
         ])
 
     def forward(self, x):
-        lstm_out, _ = self.lstm(x)
-        attn_scores = self.attn(lstm_out)  # shape: (batch, seq_len, 1)
-        attn_weights = torch.softmax(attn_scores, dim=1)  # shape: (batch, seq_len, 1)
-        context = torch.sum(lstm_out * attn_weights, dim=1)  # shape: (batch, hidden_dim*2)
-        return [fc(context) for fc in self.fc]  # 各桁の出力
+        lstm_out, _ = self.lstm(x)  # shape: (batch, seq, hidden_size*2)
+        attn_weights = torch.softmax(self.attn(lstm_out).squeeze(-1), dim=1)  # shape: (batch, seq)
+        context = torch.sum(lstm_out * attn_weights.unsqueeze(-1), dim=1)  # shape: (batch, hidden_size*2)
+        return [fc(context) for fc in self.fc]  # fc expects input of shape (batch, hidden_size*2)
 
 def train_lstm_model(X_train, y_train, input_size, device):
     
@@ -2822,6 +2821,7 @@ if __name__ == "__main__":
     bulk_predict_all_past_draws()
     # main_with_improved_predictions()
     
+
 
 
 
