@@ -93,3 +93,27 @@ jobs:
             git commit -m "Auto update models and walkforward predictions [skip ci]"
             git push origin HEAD:${{ github.ref_name }}
           fi
+
+      - name: Run auto reinforcement cycle
+        run: xvfb-run -a python auto_cycle.py
+
+      - name: Commit and push reinforcement outputs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
+          git fetch origin
+          git stash --include-untracked
+          git checkout ${{ github.ref_name }}
+          git pull --rebase origin ${{ github.ref_name }}
+          git stash pop || true
+
+          git add lstm_model.onnx self_predictions.csv self_predictions_gen/
+          if git diff --cached --quiet; then
+            echo "No changes from auto cycle"
+          else
+            git commit -m "Auto reinforcement update: model and predictions [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
