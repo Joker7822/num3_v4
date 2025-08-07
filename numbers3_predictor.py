@@ -684,56 +684,71 @@ class LotoLSTM(nn.Module):
         super(LotoLSTM, self).__init__()
         self.lstm = nn.GRU(input_size, hidden_size, batch_first=True, bidirectional=True)
         self.attn = nn.Linear(hidden_size * 2, 1)
-        self.fc = nn.ModuleList([
-            nn.Linear(hidden_size * 2, 10) for _ in range(3)  # 各桁：0〜9分類
-        ])
+        self.fc = nn.ModuleList([nn.Linear(hidden_size * 2, 10) for _ in range(3)])
 
     def forward(self, x):
-        lstm_out, _ = self.lstm(x)  # shape: (batch, seq, hidden_size*2)
-        attn_weights = torch.softmax(self.attn(lstm_out).squeeze(-1), dim=1)  # shape: (batch, seq)
-        context = torch.sum(lstm_out * attn_weights.unsqueeze(-1), dim=1)  # shape: (batch, hidden_size*2)
-        return [fc(context) for fc in self.fc]  # fc expects input of shape (batch, hidden_size*2)
+        # x: (batch, seq, feat) を想定。2Dのときは seq=1 を挿入
+        if x.dim() == 2:
+            x = x.unsqueeze(1)               # → (batch, 1, feat)
+
+        lstm_out, _ = self.lstm(x)           # (batch, seq, hidden*2)
+        attn_raw = self.attn(lstm_out)       # (batch, seq, 1)
+        attn_weights = torch.softmax(attn_raw.squeeze(-1), dim=1)  # (batch, seq)
+
+        context = torch.sum(lstm_out * attn_weights.unsqueeze(-1), dim=1)  # (batch, hidden*2)
+        return [fc(context) for fc in self.fc]   # 3つの (batch, 10)
 
 def train_lstm_model(X_train, y_train, input_size, device):
-    
-    torch.backends.cudnn.benchmark = True  # ★これを追加
-    
+    torch.backends.cudnn.benchmark = True
+
     model = LotoLSTM(input_size=input_size, hidden_size=128).to(device)
-    criterion = nn.MSELoss()
+    criterion = nn.CrossEntropyLoss()  # ← ここをCEに
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
+    # y_train は (N,3) の各桁ラベル。Longにする
     dataset = TensorDataset(
         torch.tensor(X_train, dtype=torch.float32),
-        torch.tensor(y_train, dtype=torch.float32)
+        torch.tensor(y_train, dtype=torch.long)   # ← long
     )
-    loader = DataLoader(dataset, batch_size=32, shuffle=True, pin_memory=True, num_workers=2)  # ★変更
+    loader = DataLoader(dataset, batch_size=32, shuffle=True, pin_memory=True, num_workers=2)
 
-    scaler = torch.cuda.amp.GradScaler()  # ★Mixed Precision追加
+    scaler = torch.cuda.amp.GradScaler()
 
     model.train()
     for epoch in range(50):
-        total_loss = 0
+        total_loss = 0.0
         for batch_X, batch_y in loader:
-            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+            batch_X = batch_X.to(device)                 # (B, feat)
+            batch_y = batch_y.to(device)                 # (B, 3)
+            # GRU は (B, seq, feat) を期待 → seq=1 で統一
+            batch_X = batch_X.unsqueeze(1)               # (B, 1, feat)
+
             optimizer.zero_grad()
-            with torch.cuda.amp.autocast():  # ★ここもMixed Precision
-                outputs = model(batch_X)
-                loss = criterion(outputs, batch_y)
+            with torch.cuda.amp.autocast():
+                outputs = model(batch_X)                 # list of 3 × (B,10)
+                # 各桁のCEを平均
+                loss = (
+                    criterion(outputs[0], batch_y[:, 0]) +
+                    criterion(outputs[1], batch_y[:, 1]) +
+                    criterion(outputs[2], batch_y[:, 2])
+                ) / 3.0
+
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
             total_loss += loss.item()
+
         print(f"[LSTM] Epoch {epoch+1}, Loss: {total_loss/len(loader):.4f}")
 
-    # ONNXエクスポート
+    # ONNX（簡易に outputs を 1つのテンソルにするなら torch.cat するが、今はそのままでもOK）
     dummy_input = torch.randn(1, 1, input_size).to(device)
     torch.onnx.export(
         model,
         dummy_input,
         "lstm_model.onnx",
         input_names=["input"],
-        output_names=["output"],
-        dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+        output_names=["d1_d2_d3_logits"],  # 名称だけ変更
+        dynamic_axes={"input": {0: "batch_size"}},
         opset_version=12
     )
     print("[INFO] LSTM モデルのトレーニングが完了")
@@ -2821,6 +2836,7 @@ if __name__ == "__main__":
     bulk_predict_all_past_draws()
     # main_with_improved_predictions()
     
+
 
 
 
