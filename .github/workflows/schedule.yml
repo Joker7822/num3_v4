@@ -71,7 +71,7 @@ jobs:
           fi
 
       - name: Run walkforward trainer
-        run: xvfb-run -a python walkforward_trainer.py
+        run: xvfb-run -a python auto_cycle.py
 
       - name: Commit and push models and prediction results
         env:
