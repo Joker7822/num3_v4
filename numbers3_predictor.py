@@ -1011,141 +1011,141 @@ class LotoPredictor:
         self.meta_model = None
         self.meta_model = load_meta_model()
 
-def train_model(self, data, reference_date=None):
-    print("[INFO] Numbers3学習開始")
-
-    # === 未来データ除外 ===
-    data["抽せん日"] = pd.to_datetime(data["抽せん日"], errors='coerce')
-    latest_draw_date = reference_date or data["抽せん日"].max()
-    data = data[data["抽せん日"] <= latest_draw_date]
-    print(f"[INFO] 未来データ除外後: {len(data)}件（{latest_draw_date.date()} 以前）")
-
-    true_numbers = data['本数字'].apply(lambda x: parse_number_string(x)).tolist()
-
-    # === 🔁 evaluation_result.csv 読み込み（1回だけ） ===
-    try:
-        eval_df = pd.read_csv("evaluation_result.csv")
-        eval_df["抽せん日"] = pd.to_datetime(eval_df["抽せん日"], errors="coerce")
-        eval_df = eval_df[eval_df["抽せん日"] <= latest_draw_date]
-    except Exception as e:
-        print(f"[WARNING] evaluation_result.csv 読み込み失敗: {e}")
-        eval_df = pd.DataFrame()
-
-    # === ① ストレート的中（過去30日以内）を再学習に追加 ===
-    if not eval_df.empty:
-        recent_hits = eval_df[
-            (eval_df["等級"] == "ストレート") &
-            (eval_df["抽せん日"] >= latest_draw_date - pd.Timedelta(days=30))
-        ]
-        if not recent_hits.empty:
-            preds = recent_hits["予測1"].dropna().apply(lambda x: eval(x) if isinstance(x, str) else x)
-            synthetic_rows_eval = pd.DataFrame({
-                '抽せん日': [latest_draw_date] * len(preds),
-                '本数字': preds.tolist()
-            })
-            data = pd.concat([data, synthetic_rows_eval], ignore_index=True)
-            print(f"[INFO] ✅ ストレート的中データ追加: {len(synthetic_rows_eval)}件")
-        else:
-            print("[INFO] ストレート的中（過去30日以内）なし")
-
-    # === ② 自己予測から一致2+のボックス/ストレート構成を追加 ===
-    self_data = load_self_predictions(
-        file_path="self_predictions.csv",
-        min_match_threshold=2,
-        true_data=true_numbers,
-        max_date=latest_draw_date
-    )
-    added_self = 0
-    if self_data:
-        high_grade_predictions = []
-        seen = set()
-        for pred_tuple, count in self_data:
-            pred = list(pred_tuple)
-            if len(pred) != 3 or tuple(pred) in seen:
-                continue
-            for true in true_numbers:
-                if classify_numbers3_prize(pred, true) in ["ストレート", "ボックス"]:
-                    high_grade_predictions.append((pred, count))
-                    seen.add(tuple(pred))
-                    break
-
-        if high_grade_predictions:
-            synthetic_rows = pd.DataFrame({
-                '抽せん日': [latest_draw_date] * sum(count for _, count in high_grade_predictions),
-                '本数字': [row[0] for row in high_grade_predictions for _ in range(row[1])]
-            })
-            data = pd.concat([data, synthetic_rows], ignore_index=True)
-            added_self = len(synthetic_rows)
-    print(f"[INFO] ✅ 自己進化データ追加: {added_self}件")
-
-    # === ③ PPO出力から一致2+の構成を追加 ===
-    try:
-        ppo_predictions = ppo_multiagent_predict(data, num_predictions=5)
-        matched_predictions = []
-        for pred, conf in ppo_predictions:
-            for actual in true_numbers:
-                match_count = len(set(pred) & set(actual))
-                grade = classify_numbers3_prize(pred, actual)
-                if match_count >= 2 and grade in ["ボックス", "ストレート"]:
-                    matched_predictions.append(pred)
-                    break
-        if matched_predictions:
-            synthetic_rows_ppo = pd.DataFrame({
-                '抽せん日': [latest_draw_date] * len(matched_predictions),
-                '本数字': matched_predictions
-            })
-            data = pd.concat([data, synthetic_rows_ppo], ignore_index=True)
-            print(f"[INFO] ✅ PPO補強データ追加: {len(synthetic_rows_ppo)}件")
-        else:
-            print("[INFO] PPO出力に一致数2+の高等級データは見つかりませんでした")
-    except Exception as e:
-        print(f"[WARNING] PPO補強データ抽出に失敗: {e}")
-
-    # === ④ 過去評価から一致2+の予測を追加 ===
-    if not eval_df.empty:
-        eval_df["本数字一致数_1"] = eval_df.get("本数字一致数_1", 0)
-        matched = eval_df[
-            (eval_df["本数字一致数_1"] >= 2) &
-            (eval_df["等級"].isin(["ボックス", "ストレート"]))
-        ]
-        if not matched.empty:
-            preds = matched["予測1"].dropna().apply(lambda x: eval(x) if isinstance(x, str) else x)
-            synthetic_rows_eval = pd.DataFrame({
-                '抽せん日': [latest_draw_date] * len(preds),
-                '本数字': preds.tolist()
-            })
-            data = pd.concat([data, synthetic_rows_eval], ignore_index=True)
-            print(f"[INFO] ✅ 過去評価から一致2+の予測再学習: {len(synthetic_rows_eval)}件")
-        else:
-            print("[INFO] 一致数2以上の再学習用データは見つかりませんでした")
-
-    # === 特徴量生成とスケーリング ===
-    X, y, scaler = preprocess_data(data)
-    if X is None or y is None:
-        print("[ERROR] 特徴量作成に失敗しました")
-        return
-
-    self.scaler = scaler
-    self.feature_names = [f"f{i}" for i in range(X.shape[1])]
-    X_df = pd.DataFrame(X, columns=self.feature_names)
-
-    # === AutoGluon 各桁モデルの学習 ===
-    from autogluon.tabular import TabularPredictor
-    self.regression_models = []
-    for i in range(3):
-        y_i = [row[i] for row in y]
-        train_data = X_df.copy()
-        train_data["target"] = y_i
-        predictor = TabularPredictor(label="target", verbosity=0)
-        predictor.fit(train_data)
-        self.regression_models.append(predictor)
-        print(f"[INFO] AutoGluon モデル {i} 学習完了")
-
-    # === LSTM モデルの学習 ===
-    import torch
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    self.lstm_model = train_lstm_model(X, y, input_size=X.shape[1], device=device)
-    print("[INFO] LSTM モデル学習完了")
+    def train_model(self, data, reference_date=None):
+        print("[INFO] Numbers3学習開始")
+    
+        # === 未来データ除外 ===
+        data["抽せん日"] = pd.to_datetime(data["抽せん日"], errors='coerce')
+        latest_draw_date = reference_date or data["抽せん日"].max()
+        data = data[data["抽せん日"] <= latest_draw_date]
+        print(f"[INFO] 未来データ除外後: {len(data)}件（{latest_draw_date.date()} 以前）")
+    
+        true_numbers = data['本数字'].apply(lambda x: parse_number_string(x)).tolist()
+    
+        # === 🔁 evaluation_result.csv 読み込み（1回だけ） ===
+        try:
+            eval_df = pd.read_csv("evaluation_result.csv")
+            eval_df["抽せん日"] = pd.to_datetime(eval_df["抽せん日"], errors="coerce")
+            eval_df = eval_df[eval_df["抽せん日"] <= latest_draw_date]
+        except Exception as e:
+            print(f"[WARNING] evaluation_result.csv 読み込み失敗: {e}")
+            eval_df = pd.DataFrame()
+    
+        # === ① ストレート的中（過去30日以内）を再学習に追加 ===
+        if not eval_df.empty:
+            recent_hits = eval_df[
+                (eval_df["等級"] == "ストレート") &
+                (eval_df["抽せん日"] >= latest_draw_date - pd.Timedelta(days=30))
+            ]
+            if not recent_hits.empty:
+                preds = recent_hits["予測1"].dropna().apply(lambda x: eval(x) if isinstance(x, str) else x)
+                synthetic_rows_eval = pd.DataFrame({
+                    '抽せん日': [latest_draw_date] * len(preds),
+                    '本数字': preds.tolist()
+                })
+                data = pd.concat([data, synthetic_rows_eval], ignore_index=True)
+                print(f"[INFO] ✅ ストレート的中データ追加: {len(synthetic_rows_eval)}件")
+            else:
+                print("[INFO] ストレート的中（過去30日以内）なし")
+    
+        # === ② 自己予測から一致2+のボックス/ストレート構成を追加 ===
+        self_data = load_self_predictions(
+            file_path="self_predictions.csv",
+            min_match_threshold=2,
+            true_data=true_numbers,
+            max_date=latest_draw_date
+        )
+        added_self = 0
+        if self_data:
+            high_grade_predictions = []
+            seen = set()
+            for pred_tuple, count in self_data:
+                pred = list(pred_tuple)
+                if len(pred) != 3 or tuple(pred) in seen:
+                    continue
+                for true in true_numbers:
+                    if classify_numbers3_prize(pred, true) in ["ストレート", "ボックス"]:
+                        high_grade_predictions.append((pred, count))
+                        seen.add(tuple(pred))
+                        break
+    
+            if high_grade_predictions:
+                synthetic_rows = pd.DataFrame({
+                    '抽せん日': [latest_draw_date] * sum(count for _, count in high_grade_predictions),
+                    '本数字': [row[0] for row in high_grade_predictions for _ in range(row[1])]
+                })
+                data = pd.concat([data, synthetic_rows], ignore_index=True)
+                added_self = len(synthetic_rows)
+        print(f"[INFO] ✅ 自己進化データ追加: {added_self}件")
+    
+        # === ③ PPO出力から一致2+の構成を追加 ===
+        try:
+            ppo_predictions = ppo_multiagent_predict(data, num_predictions=5)
+            matched_predictions = []
+            for pred, conf in ppo_predictions:
+                for actual in true_numbers:
+                    match_count = len(set(pred) & set(actual))
+                    grade = classify_numbers3_prize(pred, actual)
+                    if match_count >= 2 and grade in ["ボックス", "ストレート"]:
+                        matched_predictions.append(pred)
+                        break
+            if matched_predictions:
+                synthetic_rows_ppo = pd.DataFrame({
+                    '抽せん日': [latest_draw_date] * len(matched_predictions),
+                    '本数字': matched_predictions
+                })
+                data = pd.concat([data, synthetic_rows_ppo], ignore_index=True)
+                print(f"[INFO] ✅ PPO補強データ追加: {len(synthetic_rows_ppo)}件")
+            else:
+                print("[INFO] PPO出力に一致数2+の高等級データは見つかりませんでした")
+        except Exception as e:
+            print(f"[WARNING] PPO補強データ抽出に失敗: {e}")
+    
+        # === ④ 過去評価から一致2+の予測を追加 ===
+        if not eval_df.empty:
+            eval_df["本数字一致数_1"] = eval_df.get("本数字一致数_1", 0)
+            matched = eval_df[
+                (eval_df["本数字一致数_1"] >= 2) &
+                (eval_df["等級"].isin(["ボックス", "ストレート"]))
+            ]
+            if not matched.empty:
+                preds = matched["予測1"].dropna().apply(lambda x: eval(x) if isinstance(x, str) else x)
+                synthetic_rows_eval = pd.DataFrame({
+                    '抽せん日': [latest_draw_date] * len(preds),
+                    '本数字': preds.tolist()
+                })
+                data = pd.concat([data, synthetic_rows_eval], ignore_index=True)
+                print(f"[INFO] ✅ 過去評価から一致2+の予測再学習: {len(synthetic_rows_eval)}件")
+            else:
+                print("[INFO] 一致数2以上の再学習用データは見つかりませんでした")
+    
+        # === 特徴量生成とスケーリング ===
+        X, y, scaler = preprocess_data(data)
+        if X is None or y is None:
+            print("[ERROR] 特徴量作成に失敗しました")
+            return
+    
+        self.scaler = scaler
+        self.feature_names = [f"f{i}" for i in range(X.shape[1])]
+        X_df = pd.DataFrame(X, columns=self.feature_names)
+    
+        # === AutoGluon 各桁モデルの学習 ===
+        from autogluon.tabular import TabularPredictor
+        self.regression_models = []
+        for i in range(3):
+            y_i = [row[i] for row in y]
+            train_data = X_df.copy()
+            train_data["target"] = y_i
+            predictor = TabularPredictor(label="target", verbosity=0)
+            predictor.fit(train_data)
+            self.regression_models.append(predictor)
+            print(f"[INFO] AutoGluon モデル {i} 学習完了")
+    
+        # === LSTM モデルの学習 ===
+        import torch
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.lstm_model = train_lstm_model(X, y, input_size=X.shape[1], device=device)
+        print("[INFO] LSTM モデル学習完了")
 
     def predict(self, latest_data, num_candidates=50):
         print("[INFO] Numbers3予測開始")
@@ -2819,4 +2819,5 @@ if __name__ == "__main__":
     bulk_predict_all_past_draws()
     # main_with_improved_predictions()
     
+
 
