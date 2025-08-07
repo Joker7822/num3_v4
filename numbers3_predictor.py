@@ -2798,6 +2798,27 @@ if __name__ == "__main__":
 # Patched LotoPredictor (safe, no-None predict)
 # =========================
 class LotoPredictor:
+
+    def train_model(self, data, reference_date=None):
+        """安全版: 予測に必要な属性だけ初期化（重い学習はしない）"""
+        print("[INFO][PATCH] train_model (safe) start")
+        try:
+            import pandas as pd
+            if reference_date is not None and "抽せん日" in getattr(data, "columns", []):
+                data = data.copy()
+                data["抽せん日"] = pd.to_datetime(data["抽せん日"], errors="coerce")
+                data = data[data["抽せん日"] <= pd.to_datetime(reference_date)]
+            # preprocess_data は既存関数を利用
+            X, _, scaler = preprocess_data(data)
+            if X is not None and getattr(X, "size", 0) > 0:
+                self.input_size = X.shape[1]
+                self.scaler = scaler
+                # 既存コードが None を嫌うのでダミーの特徴量名を持たせる
+                self.feature_names = [f"f_{i}" for i in range(self.input_size)]
+        except Exception as e:
+            print(f"[WARN][PATCH] train_model failed: {e}")
+        print("[INFO][PATCH] train_model (safe) done")
+        return self
     def __init__(self, input_size=None, hidden_size=128):
         print("[INFO][PATCH] モデルを初期化（安全版）")
         self.input_size = input_size
