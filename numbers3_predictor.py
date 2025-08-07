@@ -2791,3 +2791,210 @@ if __name__ == "__main__":
     bulk_predict_all_past_draws()
     # main_with_improved_predictions()
     
+
+
+
+# =========================
+# Patched LotoPredictor (safe, no-None predict)
+# =========================
+class LotoPredictor:
+    def __init__(self, input_size=None, hidden_size=128):
+        print("[INFO][PATCH] モデルを初期化（安全版）")
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        # 既存コードではこれらが None のままになりやすいので、初期値を明示
+        self.lstm_model = None
+        self.regression_models = [None, None, None]
+        self.scaler = None
+        self.feature_names = None
+        # メタモデルが未定義のケースに備える
+        try:
+            self.meta_model = load_meta_model()
+        except Exception as _:
+            self.meta_model = None
+
+    def _fallback_candidates(self, latest_data, want=30):
+        """PPO / Transformer / Diffusion 等から候補を集めるフォールバック"""
+        cands = []
+
+        # PPOベース（依存最小）
+        try:
+            cands.extend(ppo_multiagent_predict(latest_data, num_predictions=max(5, want//3)))
+        except Exception as e:
+            print(f"[WARN][PATCH] ppo_multiagent_predict 失敗: {e}")
+
+        # Transformer（なければ学習→軽量）
+        try:
+            cands.extend(transformer_generate_predictions(latest_data))
+        except Exception as e:
+            print(f"[WARN][PATCH] transformer_generate_predictions 失敗: {e}")
+
+        # Diffusion（モデルがなければスキップ）
+        try:
+            cands.extend(diffusion_generate_predictions(latest_data, num_predictions=max(3, want//4)))
+        except Exception as e:
+            print(f"[INFO][PATCH] diffusion_generate_predictions スキップ/失敗: {e}")
+
+        # 最低限のランダムバックアップ
+        import random
+        seen = set(tuple(x[0]) for x in cands if isinstance(x, (list, tuple)) and len(x)>=1 and isinstance(x[0], (list, tuple)))
+        while len(cands) < want:
+            r = sorted(random.sample(range(10), 3))
+            if tuple(r) not in seen:
+                cands.append((r, 0.80))
+                seen.add(tuple(r))
+        return cands
+
+    def predict(self, latest_data, num_candidates=50):
+        print("[INFO][PATCH] 安全版 Numbers3 予測開始")
+        # === 前処理（失敗時はフォールバック） ===
+        try:
+            X, _, _ = preprocess_data(latest_data)
+        except Exception as e:
+            print(f"[WARN][PATCH] 前処理失敗: {e}")
+            X = None
+
+        # 特徴量がなくても動くように
+        import numpy as np
+        import pandas as pd
+        if X is not None:
+            try:
+                # 既存の学習器がなくても DataFrame は作れるようにダミー名を割当て
+                self.feature_names = self.feature_names or [f"f_{i}" for i in range(X.shape[1])]
+                X_df = pd.DataFrame(X, columns=self.feature_names[:X.shape[1]])
+            except Exception as e:
+                print(f"[WARN][PATCH] 特徴量テーブル作成に失敗: {e}")
+                X_df = None
+        else:
+            X_df = None
+
+        # 周期スコア取得（失敗しても続行）
+        try:
+            cycle_scores = calculate_number_cycle_score(latest_data)
+        except Exception as e:
+            print(f"[INFO][PATCH] 周期スコア計算をスキップ: {e}")
+            cycle_scores = {}
+
+        candidates = []
+
+        # === Auto 回帰モデルが揃っているなら使用（必須ではない） ===
+        try:
+            if X_df is not None and all(m is not None for m in self.regression_models):
+                pred_digits = [self.regression_models[i].predict(X_df) for i in range(3)]
+                auto_preds = np.array(pred_digits).T
+            else:
+                auto_preds = None
+        except Exception as e:
+            print(f"[WARN][PATCH] 回帰モデル予測をスキップ: {e}")
+            auto_preds = None
+
+        # === LSTM があれば使用（なくてもOK） ===
+        try:
+            lstm_preds = None
+            if X is not None and self.lstm_model is not None:
+                import torch
+                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                X_tensor = torch.tensor(X.reshape(-1, 1, X.shape[1]), dtype=torch.float32).to(device)
+                self.lstm_model.to(device)
+                self.lstm_model.eval()
+                with torch.no_grad():
+                    outputs = self.lstm_model(X_tensor)[:3]
+                    lstm_preds_list = [torch.argmax(out, dim=1).cpu().numpy() for out in outputs]
+                import numpy as np
+                lstm_preds = np.array(lstm_preds_list).T
+        except Exception as e:
+            print(f"[WARN][PATCH] LSTM 予測をスキップ: {e}")
+            lstm_preds = None
+
+        # === 両方ない/足りない場合はフォールバック ===
+        if auto_preds is None and lstm_preds is None:
+            print("[INFO][PATCH] 学習器が未設定のためフォールバック生成に切替")
+            raw = self._fallback_candidates(latest_data, want=max(20, num_candidates))
+            candidates = [{"numbers": r, "confidence": conf, "score": 0.5} for (r, conf) in raw]
+        else:
+            # 片方だけでも存在する場合にマージ
+            import numpy as np
+            n = 0
+            if auto_preds is not None:
+                n = len(auto_preds)
+            if lstm_preds is not None:
+                n = max(n, len(lstm_preds))
+            for i in range(n):
+                a = auto_preds[i] if (auto_preds is not None and i < len(auto_preds)) else None
+                l = lstm_preds[i] if (lstm_preds is not None and i < len(lstm_preds)) else None
+
+                if a is not None and l is not None:
+                    merged = (0.5 * a + 0.5 * l)
+                elif a is not None:
+                    merged = a
+                else:
+                    merged = l
+
+                try:
+                    numbers = list(map(int, np.round(merged).astype(int).tolist()))[:3]
+                except Exception:
+                    continue
+
+                if len(set(numbers)) < 3:
+                    continue
+
+                # 構造スコア
+                try:
+                    structure_score = score_real_structure_similarity(numbers)
+                except Exception:
+                    structure_score = 0.5
+
+                # 周期
+                try:
+                    avg_cycle = np.mean([cycle_scores.get(n, 99) for n in numbers]) if cycle_scores else 50
+                except Exception:
+                    avg_cycle = 50
+
+                if structure_score < 0.3:
+                    continue
+                if avg_cycle >= 80:
+                    continue
+
+                base_conf = 0.9
+                final_conf = base_conf
+                # メタ補正があれば使う（なくてもOK）
+                try:
+                    if self.meta_model is not None and X_df is not None and i < len(X_df):
+                        extended = np.concatenate([X_df.iloc[i].values, [structure_score, avg_cycle]]).reshape(1, -1)
+                        pm = self.meta_model.predict(extended)[0]
+                        final_conf = 0.5 * base_conf + 0.5 * max(0.0, min(pm / 3.0, 1.0))
+                except Exception as e:
+                    pass
+
+                priority = 0.4 * structure_score + 0.3 * final_conf + 0.3 * (1 - avg_cycle / 100.0)
+                candidates.append({"numbers": numbers, "confidence": float(final_conf), "score": float(priority)})
+
+            # 足りなければフォールバックで補充
+            if len(candidates) < num_candidates:
+                extra = self._fallback_candidates(latest_data, want=num_candidates - len(candidates))
+                candidates.extend({"numbers": r, "confidence": conf, "score": 0.45} for (r, conf) in extra)
+
+        # === 上位選抜 & ストレート構成を最低1件 ===
+        candidates = sorted(candidates, key=lambda x: -x["score"])
+        top = []
+        seen = set()
+        for c in candidates:
+            t = tuple(c["numbers"])
+            if t in seen:
+                continue
+            seen.add(t)
+            top.append((c["numbers"], c["confidence"]))
+            if len(top) >= num_candidates:
+                break
+
+        # ストレート構成を必ず1件（自分自身との比較は常にストレートなので簡単）
+        has_straight = any(len(set(p[0])) == 3 for p in top)
+        if not has_straight:
+            import random
+            for _ in range(100):
+                new = sorted(random.sample(range(10), 3))
+                if tuple(new) not in seen:
+                    top.insert(0, (new, 0.98))
+                    break
+
+        return top, [conf for _, conf in top]
