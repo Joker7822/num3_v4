@@ -1547,7 +1547,8 @@ class CycleAttentionTransformer(nn.Module):
         x = x.permute(1, 0, 2)                     # (seq_len, batch, embed_dim)
         x = self.transformer_encoder(x)            # (seq_len, batch, embed_dim)
         x = x.permute(1, 0, 2)                     # (batch, seq_len, embed_dim)
-        x = x.mean(dim=1)                          # Global average pooling
+        x = x.view(1, -1) if x.dim() == 1 else x
+        x = x.mean(dim=1)                       
         x = self.ff(x)                             # (batch, 4)
         return x
 
@@ -1588,6 +1589,7 @@ def train_transformer_with_cycle_attention(df, model_path="transformer_model.pth
             x = x.permute(1, 0, 2)
             x = self.transformer_encoder(x)
             x = x.permute(1, 0, 2)
+            x = x.view(1, -1) if x.dim() == 1 else x
             x = x.mean(dim=1)
             return self.ff(x)
 
@@ -2819,5 +2821,6 @@ if __name__ == "__main__":
     bulk_predict_all_past_draws()
     # main_with_improved_predictions()
     
+
 
 
