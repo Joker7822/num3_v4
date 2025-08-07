@@ -684,71 +684,56 @@ class LotoLSTM(nn.Module):
         super(LotoLSTM, self).__init__()
         self.lstm = nn.GRU(input_size, hidden_size, batch_first=True, bidirectional=True)
         self.attn = nn.Linear(hidden_size * 2, 1)
-        self.fc = nn.ModuleList([nn.Linear(hidden_size * 2, 10) for _ in range(3)])
+        self.fc = nn.ModuleList([
+            nn.Linear(hidden_size * 2, 10) for _ in range(3)  # 各桁：0〜9分類
+        ])
 
     def forward(self, x):
-        # x: (batch, seq, feat) を想定。2Dのときは seq=1 を挿入
-        if x.dim() == 2:
-            x = x.unsqueeze(1)               # → (batch, 1, feat)
-
-        lstm_out, _ = self.lstm(x)           # (batch, seq, hidden*2)
-        attn_raw = self.attn(lstm_out)       # (batch, seq, 1)
-        attn_weights = torch.softmax(attn_raw.squeeze(-1), dim=1)  # (batch, seq)
-
-        context = torch.sum(lstm_out * attn_weights.unsqueeze(-1), dim=1)  # (batch, hidden*2)
-        return [fc(context) for fc in self.fc]   # 3つの (batch, 10)
+        lstm_out, _ = self.lstm(x)
+        attn_weights = torch.softmax(self.attn(lstm_out).squeeze(-1), dim=1)
+        context = torch.sum(lstm_out * attn_weights.unsqueeze(-1), dim=1)
+        return [fc(context) for fc in self.fc]  # 各桁の出力
 
 def train_lstm_model(X_train, y_train, input_size, device):
-    torch.backends.cudnn.benchmark = True
-
+    
+    torch.backends.cudnn.benchmark = True  # ★これを追加
+    
     model = LotoLSTM(input_size=input_size, hidden_size=128).to(device)
-    criterion = nn.CrossEntropyLoss()  # ← ここをCEに
+    criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    # y_train は (N,3) の各桁ラベル。Longにする
     dataset = TensorDataset(
         torch.tensor(X_train, dtype=torch.float32),
-        torch.tensor(y_train, dtype=torch.long)   # ← long
+        torch.tensor(y_train, dtype=torch.float32)
     )
-    loader = DataLoader(dataset, batch_size=32, shuffle=True, pin_memory=True, num_workers=2)
+    loader = DataLoader(dataset, batch_size=32, shuffle=True, pin_memory=True, num_workers=2)  # ★変更
 
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.cuda.amp.GradScaler()  # ★Mixed Precision追加
 
     model.train()
     for epoch in range(50):
-        total_loss = 0.0
+        total_loss = 0
         for batch_X, batch_y in loader:
-            batch_X = batch_X.to(device)                 # (B, feat)
-            batch_y = batch_y.to(device)                 # (B, 3)
-            # GRU は (B, seq, feat) を期待 → seq=1 で統一
-            batch_X = batch_X.unsqueeze(1)               # (B, 1, feat)
-
+            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
             optimizer.zero_grad()
-            with torch.cuda.amp.autocast():
-                outputs = model(batch_X)                 # list of 3 × (B,10)
-                # 各桁のCEを平均
-                loss = (
-                    criterion(outputs[0], batch_y[:, 0]) +
-                    criterion(outputs[1], batch_y[:, 1]) +
-                    criterion(outputs[2], batch_y[:, 2])
-                ) / 3.0
-
+            with torch.cuda.amp.autocast():  # ★ここもMixed Precision
+                outputs = model(batch_X)
+                loss = criterion(outputs, batch_y)
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
             total_loss += loss.item()
-
         print(f"[LSTM] Epoch {epoch+1}, Loss: {total_loss/len(loader):.4f}")
 
-    # ONNX（簡易に outputs を 1つのテンソルにするなら torch.cat するが、今はそのままでもOK）
+    # ONNXエクスポート
     dummy_input = torch.randn(1, 1, input_size).to(device)
     torch.onnx.export(
         model,
         dummy_input,
         "lstm_model.onnx",
         input_names=["input"],
-        output_names=["d1_d2_d3_logits"],  # 名称だけ変更
-        dynamic_axes={"input": {0: "batch_size"}},
+        output_names=["output"],
+        dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
         opset_version=12
     )
     print("[INFO] LSTM モデルのトレーニングが完了")
@@ -1028,15 +1013,15 @@ class LotoPredictor:
 
     def train_model(self, data, reference_date=None):
         print("[INFO] Numbers3学習開始")
-    
+
         # === 未来データ除外 ===
         data["抽せん日"] = pd.to_datetime(data["抽せん日"], errors='coerce')
         latest_draw_date = reference_date or data["抽せん日"].max()
         data = data[data["抽せん日"] <= latest_draw_date]
         print(f"[INFO] 未来データ除外後: {len(data)}件（{latest_draw_date.date()} 以前）")
-    
+
         true_numbers = data['本数字'].apply(lambda x: parse_number_string(x)).tolist()
-    
+
         # === 🔁 evaluation_result.csv 読み込み（1回だけ） ===
         try:
             eval_df = pd.read_csv("evaluation_result.csv")
@@ -1045,8 +1030,8 @@ class LotoPredictor:
         except Exception as e:
             print(f"[WARNING] evaluation_result.csv 読み込み失敗: {e}")
             eval_df = pd.DataFrame()
-    
-        # === ① ストレート的中（過去30日以内）を再学習に追加 ===
+
+        # === ① ストレート的中（過去30日以内）を再学習に追加
         if not eval_df.empty:
             recent_hits = eval_df[
                 (eval_df["等級"] == "ストレート") &
@@ -1062,13 +1047,13 @@ class LotoPredictor:
                 print(f"[INFO] ✅ ストレート的中データ追加: {len(synthetic_rows_eval)}件")
             else:
                 print("[INFO] ストレート的中（過去30日以内）なし")
-    
-        # === ② 自己予測から一致2+のボックス/ストレート構成を追加 ===
+
+        # === ② 自己予測から一致2+のボックス/ストレート構成を追加
         self_data = load_self_predictions(
             file_path="self_predictions.csv",
             min_match_threshold=2,
             true_data=true_numbers,
-            max_date=latest_draw_date
+            max_date=latest_draw_date  # 🔒 未来データ除外
         )
         added_self = 0
         if self_data:
@@ -1083,7 +1068,7 @@ class LotoPredictor:
                         high_grade_predictions.append((pred, count))
                         seen.add(tuple(pred))
                         break
-    
+
             if high_grade_predictions:
                 synthetic_rows = pd.DataFrame({
                     '抽せん日': [latest_draw_date] * sum(count for _, count in high_grade_predictions),
@@ -1092,8 +1077,8 @@ class LotoPredictor:
                 data = pd.concat([data, synthetic_rows], ignore_index=True)
                 added_self = len(synthetic_rows)
         print(f"[INFO] ✅ 自己進化データ追加: {added_self}件")
-    
-        # === ③ PPO出力から一致2+の構成を追加 ===
+
+        # === ③ PPO出力から一致2+の構成を追加（評価対象は最新抽せん日まで）
         try:
             ppo_predictions = ppo_multiagent_predict(data, num_predictions=5)
             matched_predictions = []
@@ -1115,8 +1100,8 @@ class LotoPredictor:
                 print("[INFO] PPO出力に一致数2+の高等級データは見つかりませんでした")
         except Exception as e:
             print(f"[WARNING] PPO補強データ抽出に失敗: {e}")
-    
-        # === ④ 過去評価から一致2+の予測を追加 ===
+
+        # === ④ evaluation_result.csv から一致数2+のボックス/ストレートを追加
         if not eval_df.empty:
             eval_df["本数字一致数_1"] = eval_df.get("本数字一致数_1", 0)
             matched = eval_df[
@@ -1133,34 +1118,6 @@ class LotoPredictor:
                 print(f"[INFO] ✅ 過去評価から一致2+の予測再学習: {len(synthetic_rows_eval)}件")
             else:
                 print("[INFO] 一致数2以上の再学習用データは見つかりませんでした")
-    
-        # === 特徴量生成とスケーリング ===
-        X, y, scaler = preprocess_data(data)
-        if X is None or y is None:
-            print("[ERROR] 特徴量作成に失敗しました")
-            return
-    
-        self.scaler = scaler
-        self.feature_names = [f"f{i}" for i in range(X.shape[1])]
-        X_df = pd.DataFrame(X, columns=self.feature_names)
-    
-        # === AutoGluon 各桁モデルの学習 ===
-        from autogluon.tabular import TabularPredictor
-        self.regression_models = []
-        for i in range(3):
-            y_i = [row[i] for row in y]
-            train_data = X_df.copy()
-            train_data["target"] = y_i
-            predictor = TabularPredictor(label="target", verbosity=0)
-            predictor.fit(train_data)
-            self.regression_models.append(predictor)
-            print(f"[INFO] AutoGluon モデル {i} 学習完了")
-    
-        # === LSTM モデルの学習 ===
-        import torch
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.lstm_model = train_lstm_model(X, y, input_size=X.shape[1], device=device)
-        print("[INFO] LSTM モデル学習完了")
 
     def predict(self, latest_data, num_candidates=50):
         print("[INFO] Numbers3予測開始")
@@ -1562,8 +1519,7 @@ class CycleAttentionTransformer(nn.Module):
         x = x.permute(1, 0, 2)                     # (seq_len, batch, embed_dim)
         x = self.transformer_encoder(x)            # (seq_len, batch, embed_dim)
         x = x.permute(1, 0, 2)                     # (batch, seq_len, embed_dim)
-        x = x.view(1, -1) if x.dim() == 1 else x
-        x = x.mean(dim=1)                       
+        x = x.mean(dim=1)                          # Global average pooling
         x = self.ff(x)                             # (batch, 4)
         return x
 
@@ -1604,7 +1560,6 @@ def train_transformer_with_cycle_attention(df, model_path="transformer_model.pth
             x = x.permute(1, 0, 2)
             x = self.transformer_encoder(x)
             x = x.permute(1, 0, 2)
-            x = x.view(1, -1) if x.dim() == 1 else x
             x = x.mean(dim=1)
             return self.ff(x)
 
@@ -2836,8 +2791,3 @@ if __name__ == "__main__":
     bulk_predict_all_past_draws()
     # main_with_improved_predictions()
     
-
-
-
-
-
