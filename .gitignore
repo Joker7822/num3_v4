@@ -5,3 +5,6 @@ __pycache__/
 .DS_Store
 .env
 *.sqlite3
+chrome-linux64.zip
+chromedriver-linux64.zip
+chromedriver-linux64/
