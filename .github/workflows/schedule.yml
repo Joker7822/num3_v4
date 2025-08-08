@@ -1,21 +1,34 @@
-name: Numbers3 pipeline
+name: Numbers3 pipeline (range)
 
 on:
-  workflow_dispatch:        # 手動実行
+  workflow_dispatch:
     inputs:
+      mode:
+        description: "実行モード: single or range"
+        required: true
+        default: "single"
       repeat:
-        description: "繰り返し回数 (--repeat)"
+        description: "繰り返し回数（singleモードのみ）"
         required: false
         default: "1"
       target_date:
-        description: "予測対象日 YYYY-MM-DD（省略で今日）"
+        description: "single: 予測対象日 YYYY-MM-DD（空なら今日）"
         required: false
         default: ""
-  schedule:                 # 毎平日 18:05 JST 実行（= 09:05 UTC）
+      start_date:
+        description: "range: 開始日 YYYY-MM-DD（空なら numbers3.csv の最古日）"
+        required: false
+        default: "1994-10-07"
+      end_date:
+        description: "range: 終了日 YYYY-MM-DD（空なら今日）"
+        required: false
+        default: ""
+
+  schedule:     # 毎平日 18:05 JST 実行（= 09:05 UTC）
     - cron: "5 9 * * 1-5"
 
 permissions:
-  contents: write           # 変更をpushするために必要
+  contents: write
 
 concurrency:
   group: numbers3-pipeline
@@ -25,12 +38,12 @@ jobs:
   run:
     runs-on: ubuntu-latest
     env:
-      TZ: Asia/Tokyo        # 予測対象日のデフォルトをJSTベースに
+      TZ: Asia/Tokyo
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0    # pushやタグ付けのためにフル履歴
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -48,19 +61,16 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          # requirements.txt があれば優先
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
-          # 必須パッケージ（cloudpickle, pandas, joblib 等）
-          pip install cloudpickle pandas joblib
+          pip install cloudpickle pandas
 
-      - name: Git LFS (任意：モデルが大きい場合)
+      - name: Git LFS (optional)
         run: |
           sudo apt-get update
           sudo apt-get install -y git-lfs
           git lfs install
-          # まだトラックしていない場合は有効化（失敗してもOK）
           git lfs track "models/*.pkl" || true
           git add .gitattributes || true
 
@@ -70,15 +80,20 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Run pipeline
+      - name: Run pipeline (single or range)
         run: |
           set -e
+          MODE="${{ github.event.inputs.mode }}"
           REPEAT="${{ github.event.inputs.repeat }}"
           TARGET="${{ github.event.inputs.target_date }}"
-          # 引数の組み立て
-          ARGS="--repeat ${REPEAT:-1}"
-          if [ -n "$TARGET" ]; then
-            ARGS="$ARGS --target-date $TARGET"
+          START="${{ github.event.inputs.start_date }}"
+          END="${{ github.event.inputs.end_date }}"
+          if [ "$MODE" = "range" ]; then
+            ARGS="--start-date ${START:-1994-10-07}"
+            if [ -n "$END" ]; then ARGS="$ARGS --end-date $END"; fi
+          else
+            ARGS="--repeat ${REPEAT:-1}"
+            if [ -n "$TARGET" ]; then ARGS="$ARGS --target-date $TARGET"; fi
           fi
           echo "python run_pipeline.py $ARGS"
           python run_pipeline.py $ARGS
@@ -86,7 +101,6 @@ jobs:
       - name: Commit & push if changed
         run: |
           set -e
-          # 予測CSV／評価CSV／モデルが変わっていればコミット
           git add Numbers3_predictions.csv evaluation_result.csv models/ || true
           if ! git diff --cached --quiet; then
             MSG="CI: update predictions/model ($(date +'%Y-%m-%d %H:%M %Z'))"
