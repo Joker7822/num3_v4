@@ -81,12 +81,46 @@ def normalize_predictions(preds: Any) -> List[Tuple[List[int], float]]:
     """
     予測の形を [(numbers(list[int]), confidence(float)), ...] に揃える。
     - [{'numbers':[1,2,3], 'confidence':0.7, ...}, ...] → OK
+    - {'numbers':[1,2,3], 'confidence':0.7} → 単一予測として扱う
     - [([1,2,3], 0.7), ...] → そのまま
     - [[1,2,3], [4,5,6], ...] → 信頼度は 0.5 で補完
+    - "[1,2,3]" / "1,2,3" / "(1,2,3)" → 文字列も解釈
+    - [1,2,3]（整数配列1件のみ）→ 単一予測として扱う
     """
     out: List[Tuple[List[int], float]] = []
     if preds is None:
         return out
+
+    # 単一dict
+    if isinstance(preds, dict):
+        try:
+            if "numbers" in preds:
+                nums = [int(x) for x in preds.get("numbers", [])][:3]
+                if len(nums) == 3:
+                    conf = float(preds.get("confidence", 0.5))
+                    out.append((nums, conf))
+                    return out
+        except Exception:
+            pass
+
+    # 文字列全体が一件の予測
+    if isinstance(preds, str):
+        nums = parse_number_string(preds)
+        if nums and len(nums) == 3:
+            out.append((nums, 0.5))
+        return out
+
+    # リスト/タプルが「一件の数字配列」の場合
+    if isinstance(preds, (list, tuple)) and len(preds) >= 3 and all(isinstance(x, (int, str)) for x in preds):
+        try:
+            nums = [int(x) for x in preds][:3]
+            if len(nums) == 3:
+                out.append((nums, 0.5))
+                return out
+        except Exception:
+            pass
+
+    # 通常は「反復可能な複数予測」
     try:
         for p in preds:
             if isinstance(p, dict) and "numbers" in p:
@@ -104,9 +138,25 @@ def normalize_predictions(preds: Any) -> List[Tuple[List[int], float]]:
                     nums = [int(x) for x in p][:3]
                     if len(nums) == 3:
                         out.append((nums, 0.5))
+            elif isinstance(p, str):
+                nums = parse_number_string(p)
+                if nums and len(nums) == 3:
+                    out.append((nums, 0.5))
     except Exception:
+        # どの形式にも合致しない場合は空のまま返す
         pass
     return out
+
+def generate_default_prediction(target_date: dt.date) -> List[int]:
+    """
+    予測が取得できなかった場合のフォールバック。
+    日付から決定的に[0-9]の3桁を生成（乱数未使用）。
+    """
+    s = int(target_date.strftime('%Y%m%d'))
+    a = (s * 1103515245 + 12345) & 0x7fffffff
+    b = (a * 1103515245 + 54321) & 0x7fffffff
+    c = (b * 1103515245 + 99991) & 0x7fffffff
+    return [a % 10, b % 10, c % 10]
 
 def save_eval_row(eval_csv: Path, date: dt.date, first_pred: List[int], grade: str):
     row = {
@@ -194,7 +244,9 @@ def main():
             raw_preds = model.predict(latest_data=df, num_candidates=50)
             preds = normalize_predictions(raw_preds)
             if not preds:
-                raise RuntimeError("予測結果が空です")
+                print("[WARN] 予測結果が空 → フォールバック予測を使用")
+                fallback = generate_default_prediction(target_date)
+                preds = [(fallback, 0.3)]
 
             # 2) 保存 & push
             save_predictions_to_csv(predictions=preds, drawing_date=target_date, filename=str(pred_csv), model_name=f"model-{target_date}")
