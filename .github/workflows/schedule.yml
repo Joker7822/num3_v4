@@ -1,111 +1,105 @@
-name: Numbers3 pipeline (range)
+name: Auto Scrape numbers3
 
 on:
+  # Numbers3 は月曜日から金曜日まで毎日抽せんが行われるため、平日20:00 JST（11:00 UTC）に自動実行
+  schedule:
+    - cron: '0 11 * * 1-5'  # JST 20:00 (UTC 11:00), Monday–Friday
   workflow_dispatch:
-    inputs:
-      mode:
-        description: "実行モード: single or range"
-        required: true
-        default: "single"
-      repeat:
-        description: "繰り返し回数（singleモードのみ）"
-        required: false
-        default: "1"
-      target_date:
-        description: "single: 予測対象日 YYYY-MM-DD（空なら今日）"
-        required: false
-        default: ""
-      start_date:
-        description: "range: 開始日 YYYY-MM-DD（空なら numbers3.csv の最古日）"
-        required: false
-        default: "1994-10-07"
-      end_date:
-        description: "range: 終了日 YYYY-MM-DD（空なら今日）"
-        required: false
-        default: ""
-
-  schedule:     # 毎平日 18:05 JST 実行（= 09:05 UTC）
-    - cron: "5 9 * * 1-5"
-
-permissions:
-  contents: write
-
-concurrency:
-  group: numbers3-pipeline
-  cancel-in-progress: false
 
 jobs:
-  run:
+  run-scraper:
     runs-on: ubuntu-latest
-    env:
-      TZ: Asia/Tokyo
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: '3.10'
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install deps
+      - name: Install dependencies and headless Chrome
         run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          fi
-          pip install cloudpickle pandas
+          sudo apt update
+          sudo apt install -y wget unzip xvfb \
+            libglib2.0-0 libnss3 libxi6 libxcomposite1 libxss1 \
+            libatk-bridge2.0-0 libgtk-3-0 libasound2t64
 
-      - name: Git LFS (optional)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git-lfs
-          git lfs install
-          git lfs track "models/*.pkl" || true
-          git add .gitattributes || true
+          # Install Chrome 138
+          wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chrome-linux64.zip
+          unzip chrome-linux64.zip
+          sudo mv chrome-linux64 /opt/chrome
+          sudo ln -sf /opt/chrome/chrome /usr/bin/google-chrome
 
-      - name: Configure Git identity
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # Install ChromeDriver 138
+          wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chromedriver-linux64.zip
+          unzip chromedriver-linux64.zip
+          sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
+          sudo chmod +x /usr/local/bin/chromedriver
 
-      - name: Run pipeline (single or range)
+      - name: Downgrade pip to stable version
+        run: python -m pip install pip==23.3.1
+
+      - name: Install core dependencies
+        run: pip install -r requirements_core.txt
+
+      - name: Install heavy dependencies
+        run: pip install -r requirements_heavy.txt
+
+      - name: Run scraping script
+        # Numbers3 の当選番号を取得するスクレイピングスクリプトを実行します
+        run: xvfb-run -a python scrapingnumbers3.py
+
+      - name: Commit and push numbers3.csv if changed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
-          MODE="${{ github.event.inputs.mode }}"
-          REPEAT="${{ github.event.inputs.repeat }}"
-          TARGET="${{ github.event.inputs.target_date }}"
-          START="${{ github.event.inputs.start_date }}"
-          END="${{ github.event.inputs.end_date }}"
-          if [ "$MODE" = "range" ]; then
-            ARGS="--start-date ${START:-1994-10-07}"
-            if [ -n "$END" ]; then ARGS="$ARGS --end-date $END"; fi
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
+          git fetch origin
+          git stash --include-untracked
+          git checkout ${{ github.ref_name }}
+          git pull --rebase origin ${{ github.ref_name }}
+          git stash pop || true
+
+          git add numbers3.csv
+
+          if git diff --cached --quiet; then
+            echo "No changes to numbers3.csv"
           else
-            ARGS="--repeat ${REPEAT:-1}"
-            if [ -n "$TARGET" ]; then ARGS="$ARGS --target-date $TARGET"; fi
+            git commit -m "Auto update numbers3.csv [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
           fi
-          echo "python run_pipeline.py $ARGS"
-          python run_pipeline.py $ARGS
 
-      - name: Commit & push if changed
+      - name: Run predictor script
+        # Numbers3 用の予測モデルを実行し、予測結果および評価を生成します
+        run: xvfb-run -a python run_model_evolution.py
+
+      - name: Commit and push prediction results if changed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
-          git add Numbers3_predictions.csv evaluation_result.csv models/ || true
-          if ! git diff --cached --quiet; then
-            MSG="CI: update predictions/model ($(date +'%Y-%m-%d %H:%M %Z'))"
-            git commit -m "$MSG"
-            git push
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
+          git fetch origin
+          git stash --include-untracked
+          git checkout ${{ github.ref_name }}
+          git pull --rebase origin ${{ github.ref_name }}
+          git stash pop || true
+
+          git add Numbers3_predictions.csv \
+                  evaluation_result.csv \
+                  evaluation_summary.txt \
+                  self_predictions.csv
+
+          if git diff --cached --quiet; then
+            echo "No prediction result changes"
           else
-            echo "No changes to commit."
+            git commit -m "Auto update Numbers3 prediction results [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
           fi
