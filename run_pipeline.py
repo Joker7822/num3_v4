@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Numbers3 Orchestrator (cloudpickle版・完全)
-- モデル読み込み/初回学習（cloudpickleで直列化）
-- 予測 → 保存（Numbers3_predictions.csv 追記・重複除去）→ Git push
+Numbers3 Orchestrator（範囲対応・cloudpickle版 / フルコード）
+
+機能:
+- 動的importで `numbers3_predictor.py` を読み込み
+- モデルロード or 初回学習（cloudpickle直列化）
+- 予測 → 保存（Numbers3_predictions.csv 追記・重複置換）→ Git push
 - 実績があれば評価（evaluation_result.csv に追記・重複置換）
 - 再学習 → モデル push
-- 上記を N 回ループ
+- 上記を日付ごとに実行（--start-date ～ --end-date）もしくは単一日（--target-date）
 
 使い方:
-  python run_pipeline.py --repeat 3 --model-path models/numbers3_model.pkl --data numbers3.csv
+  単一日:  python run_pipeline.py --repeat 1 --target-date 2025-08-08
+  範囲   : python run_pipeline.py --start-date 1994-10-07 --end-date 2025-08-08
+
+注意:
+- 大量日付に対しては push 回数が増えます。リポジトリの運用方針に合わせてCI制限に注意してください。
 """
 import argparse
 import datetime as dt
-import json
 import os
 import sys
 import traceback
-import joblib  # 他のユーティリティで使う可能性があるため残置
 import cloudpickle as cp
 import pandas as pd
 from pathlib import Path
@@ -46,10 +51,13 @@ def ensure_dir(p: Path):
 def parse_number_string(x: Any) -> Optional[List[int]]:
     """ '1,2,3' / '[1, 2, 3]' / list -> [1,2,3] """
     if isinstance(x, list):
-        return [int(v) for v in x][:3] if len(x) >= 3 else None
+        try:
+            return [int(v) for v in x][:3] if len(x) >= 3 else None
+        except Exception:
+            return None
     if isinstance(x, str):
         s = x.strip().replace("，", ",").replace("・", ",")
-        s = s.strip("[](){}")
+        s = s.strip("[](){}()")
         parts = [p for p in s.replace(" ", "").split(",") if p != ""]
         try:
             vals = [int(p) for p in parts]
@@ -175,15 +183,23 @@ def save_eval_row(eval_csv: Path, date: dt.date, first_pred: List[int], grade: s
     df_new.to_csv(eval_csv, index=False, encoding="utf-8-sig")
     print(f"[INFO] 評価結果を {eval_csv} に保存しました")
 
+def daterange_list(start: dt.date, end: dt.date) -> List[dt.date]:
+    if start > end:
+        start, end = end, start
+    days = (end - start).days
+    return [start + dt.timedelta(days=i) for i in range(days + 1)]
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repeat", type=int, default=1, help="繰り返し回数")
+    ap.add_argument("--repeat", type=int, default=1, help="（単一日モードのみ）繰り返し回数")
     ap.add_argument("--module-path", type=str, default=str(DEFAULT_MODULE_PATH), help="numbers3_predictorファイルパス")
     ap.add_argument("--data", type=str, default=str(DEFAULT_DATA_CSV), help="numbers3.csv パス")
     ap.add_argument("--pred-csv", type=str, default=str(DEFAULT_PRED_CSV), help="Numbers3_predictions.csv パス")
     ap.add_argument("--eval-csv", type=str, default=str(DEFAULT_EVAL_CSV), help="evaluation_result.csv パス")
     ap.add_argument("--model-path", type=str, default=str(DEFAULT_MODEL_PATH), help="モデル保存先")
-    ap.add_argument("--target-date", type=str, default=None, help="予測対象日 (YYYY-MM-DD)。未指定なら今日(Asia/Tokyo想定)")
+    ap.add_argument("--target-date", type=str, default=None, help="単一の予測対象日 (YYYY-MM-DD)")
+    ap.add_argument("--start-date", type=str, default=None, help="範囲の開始日 (YYYY-MM-DD)")
+    ap.add_argument("--end-date", type=str, default=None, help="範囲の終了日 (YYYY-MM-DD)")
     args = ap.parse_args()
 
     module_path = Path(args.module_path)
@@ -207,13 +223,19 @@ def main():
     # データ読み込み
     df = load_numbers3(data_csv)
 
-    # 予測対象日
-    if args.target_date:
-        target_date = pd.to_datetime(args.target_date).date()
+    # 対象日リストを決める
+    if args.start_date or args.end_date:
+        start = pd.to_datetime(args.start_date if args.start_date else df["抽せん日"].min()).date()
+        end = pd.to_datetime(args.end_date if args.end_date else dt.date.today()).date()
+        date_list = daterange_list(start, end)
+        print(f"[INFO] 範囲モード: {date_list[0]} ～ {date_list[-1]}（{len(date_list)}日）")
     else:
-        # 東京タイムゾーン前提で単純化：サーバ時刻日付を使用
-        target_date = dt.date.today()
-    print(f"[INFO] 予測対象日: {target_date}")
+        # 単一日
+        if args.target_date:
+            date_list = [pd.to_datetime(args.target_date).date()]
+        else:
+            date_list = [dt.date.today()]
+        print(f"[INFO] 単一日モード: {date_list[0]} / repeat={args.repeat}")
 
     # モデルのロード or 初回学習（cloudpickle）
     if model_path.exists():
@@ -224,62 +246,70 @@ def main():
         except Exception as e:
             print(f"[WARN] モデルロード失敗 → 新規作成: {e}")
             model = LotoPredictor()
-            model.train_model(data=df, reference_date=target_date)
+            # 最初の対象日で初回学習
+            model.train_model(data=df, reference_date=date_list[0])
             with open(model_path, "wb") as f:
                 cp.dump(model, f)
-            git_commit_and_push(str(model_path), f"Add initial model {target_date}")
+            git_commit_and_push(str(model_path), f"Add initial model {date_list[0]}")
     else:
         print("[INFO] 既存モデルなし → 新規学習を実行")
         model = LotoPredictor()
-        model.train_model(data=df, reference_date=target_date)
+        model.train_model(data=df, reference_date=date_list[0])
         with open(model_path, "wb") as f:
             cp.dump(model, f)
-        git_commit_and_push(str(model_path), f"Add initial model {target_date}")
+        git_commit_and_push(str(model_path), f"Add initial model {date_list[0]}")
 
-    # ループ稼働
-    for i in range(1, int(args.repeat) + 1):
-        print(f"\n===== CYCLE {i}/{args.repeat} =====")
-        try:
-            # 1) 予測
-            raw_preds = model.predict(latest_data=df, num_candidates=50)
-            preds = normalize_predictions(raw_preds)
-            if not preds:
-                print("[WARN] 予測結果が空 → フォールバック予測を使用")
-                fallback = generate_default_prediction(target_date)
-                preds = [(fallback, 0.3)]
-
-            # 2) 保存 & push
-            save_predictions_to_csv(predictions=preds, drawing_date=target_date, filename=str(pred_csv), model_name=f"model-{target_date}")
+    # 実行ループ
+    for target_date in date_list:
+        repeats = args.repeat if len(date_list) == 1 else 1
+        for i in range(1, repeats + 1):
+            print(f"\n===== {target_date} / CYCLE {i}/{repeats} =====")
             try:
-                git_commit_and_push(str(pred_csv), f"Auto update {pred_csv.name} for {target_date} [skip ci]")
+                # 1) 予測
+                raw_preds = model.predict(latest_data=df, num_candidates=50)
+                preds = normalize_predictions(raw_preds)
+                if not preds:
+                    print("[WARN] 予測結果が空 → フォールバック予測を使用")
+                    fallback = generate_default_prediction(target_date)
+                    preds = [(fallback, 0.3)]
+
+                # 2) 保存 & push
+                save_predictions_to_csv(
+                    predictions=preds,
+                    drawing_date=target_date,
+                    filename=str(pred_csv),
+                    model_name=f"model-{target_date}"
+                )
+                try:
+                    git_commit_and_push(str(pred_csv), f"Auto update {Path(pred_csv).name} for {target_date} [skip ci]")
+                except Exception as e:
+                    print(f"[WARN] 予測CSVのpushに失敗: {e}")
+
+                # 3) 評価（実績がある場合のみ）
+                actual = get_actual_for_date(df, target_date)
+                if actual is not None and len(actual) == 3:
+                    results = evaluate_predictions(preds, actual)
+                    grade = "はずれ"
+                    if isinstance(results, list) and len(results) > 0 and isinstance(results[0], dict) and "等級" in results[0]:
+                        grade = results[0]["等級"]
+                    elif isinstance(results, dict) and "等級" in results:
+                        grade = results["等級"]
+                    save_eval_row(eval_csv, target_date, preds[0][0], grade)
+                else:
+                    print("[INFO] 実績が未確定のため評価はスキップ")
+
+                # 4) 再学習 → モデル保存 & push（cloudpickle）
+                model.train_model(data=df, reference_date=target_date)
+                with open(model_path, "wb") as f:
+                    cp.dump(model, f)
+                try:
+                    git_commit_and_push(str(model_path), f"Update model after retrain {target_date}")
+                except Exception as e:
+                    print(f"[WARN] モデルpushに失敗: {e}")
+
             except Exception as e:
-                print(f"[WARN] 予測CSVのpushに失敗: {e}")
-
-            # 3) 評価（実績がある場合のみ）
-            actual = get_actual_for_date(df, target_date)
-            if actual is not None and len(actual) == 3:
-                results = evaluate_predictions(preds, actual)
-                grade = "はずれ"
-                if isinstance(results, list) and len(results) > 0 and isinstance(results[0], dict) and "等級" in results[0]:
-                    grade = results[0]["等級"]
-                elif isinstance(results, dict) and "等級" in results:
-                    grade = results["等級"]
-                save_eval_row(eval_csv, target_date, preds[0][0], grade)
-            else:
-                print("[INFO] 実績が未確定のため評価はスキップ")
-
-            # 4) 再学習 → モデル保存 & push（cloudpickle）
-            model.train_model(data=df, reference_date=target_date)
-            with open(model_path, "wb") as f:
-                cp.dump(model, f)
-            try:
-                git_commit_and_push(str(model_path), f"Update model after retrain {target_date}")
-            except Exception as e:
-                print(f"[WARN] モデルpushに失敗: {e}")
-
-        except Exception as e:
-            print(f"[ERROR] CYCLE {i} で失敗: {e}\n{traceback.format_exc()}")
-            # 次の周回へ継続
+                print(f"[ERROR] {target_date} / CYCLE {i} で失敗: {e}\n{traceback.format_exc()}")
+                # 次の日付へ継続
 
     print("\n[INFO] 完了")
 
