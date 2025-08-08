@@ -79,7 +79,7 @@ jobs:
           fi
 
       - name: Run auto reinforcement cycle
-        run: xvfb-run -a python auto_cycle.py
+        run: xvfb-run -a python run_pipeline.py
 
       - name: Commit and push reinforcement outputs
         env:
