@@ -1,122 +1,97 @@
-name: Auto Scrape Numbers3_v5
+name: Numbers3 pipeline
 
 on:
-  schedule:
-    - cron: '0 11 * * 1-5'  # JST 20:00（UTC 11:00）、月〜金
-  workflow_dispatch:
+  workflow_dispatch:        # 手動実行
+    inputs:
+      repeat:
+        description: "繰り返し回数 (--repeat)"
+        required: false
+        default: "1"
+      target_date:
+        description: "予測対象日 YYYY-MM-DD（省略で今日）"
+        required: false
+        default: ""
+  schedule:                 # 毎平日 18:05 JST 実行（= 09:05 UTC）
+    - cron: "5 9 * * 1-5"
+
+permissions:
+  contents: write           # 変更をpushするために必要
+
+concurrency:
+  group: numbers3-pipeline
+  cancel-in-progress: false
 
 jobs:
-  run-scraper:
+  run:
     runs-on: ubuntu-latest
-
+    env:
+      TZ: Asia/Tokyo        # 予測対象日のデフォルトをJSTベースに
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # pushやタグ付けのためにフル履歴
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
-      - name: Install dependencies and headless Chrome
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install deps
         run: |
-          sudo apt update
-          sudo apt install -y wget unzip xvfb \
-            libglib2.0-0 libnss3 libxi6 libxcomposite1 libxss1 \
-            libatk-bridge2.0-0 libgtk-3-0 libasound2t64
-
-          # Install Chrome
-          wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chrome-linux64.zip
-          unzip chrome-linux64.zip
-          sudo mv chrome-linux64 /opt/chrome
-          sudo ln -sf /opt/chrome/chrome /usr/bin/google-chrome
-
-          # Install ChromeDriver
-          wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chromedriver-linux64.zip
-          unzip chromedriver-linux64.zip
-          sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
-          sudo chmod +x /usr/local/bin/chromedriver
-
-      - name: Downgrade pip to stable version
-        run: python -m pip install pip==23.3.1
-
-      - name: Install core dependencies
-        run: pip install -r requirements_core.txt
-
-      - name: Install heavy dependencies
-        run: pip install -r requirements_heavy.txt
-
-      - name: Run scraping script
-        run: xvfb-run -a python scrapingnumbers3.py
-
-      - name: Commit and push numbers3.csv if changed
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-          git config --global user.name "github-actions"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
-
-          # ついでに不要アーカイブを無視
-          printf "%s\n" \
-            "chrome-linux64.zip" \
-            "chromedriver-linux64.zip" \
-            "chromedriver-linux64/" >> .gitignore || true
-
-          git fetch origin
-          git stash --include-untracked
-          git checkout ${{ github.ref_name }}
-          git pull --rebase origin ${{ github.ref_name }}
-          git stash pop || true
-
-          git add numbers3.csv .gitignore
-          if git diff --cached --quiet; then
-            echo "No changes to numbers3.csv"
-          else
-            git commit -m "Auto update numbers3.csv [skip ci]"
-            git push origin HEAD:${{ github.ref_name }}
+          python -m pip install --upgrade pip
+          # requirements.txt があれば優先
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
           fi
+          # 必須パッケージ（cloudpickle, pandas, joblib 等）
+          pip install cloudpickle pandas joblib
 
-      - name: Run auto reinforcement cycle
-        run: xvfb-run -a python run_pipeline.py
+      - name: Git LFS (任意：モデルが大きい場合)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-lfs
+          git lfs install
+          # まだトラックしていない場合は有効化（失敗してもOK）
+          git lfs track "models/*.pkl" || true
+          git add .gitattributes || true
 
-      - name: Commit and push reinforcement outputs
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Run pipeline
         run: |
           set -e
-          git config --global user.name "github-actions"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
-          git fetch origin
-          git stash --include-untracked
-          git checkout ${{ github.ref_name }}
-          git pull --rebase origin ${{ github.ref_name }}
-          git stash pop || true
-
-          # ここを存在チェック付きにする（以前はここで失敗していた）
-          if [ -f lstm_model.onnx ]; then
-            git add lstm_model.onnx
-          else
-            echo "lstm_model.onnx not found. Skipping add."
+          REPEAT="${{ github.event.inputs.repeat }}"
+          TARGET="${{ github.event.inputs.target_date }}"
+          # 引数の組み立て
+          ARGS="--repeat ${REPEAT:-1}"
+          if [ -n "$TARGET" ]; then
+            ARGS="$ARGS --target-date $TARGET"
           fi
+          echo "python run_pipeline.py $ARGS"
+          python run_pipeline.py $ARGS
 
-          if [ -f self_predictions.csv ]; then
-            git add self_predictions.csv
+      - name: Commit & push if changed
+        run: |
+          set -e
+          # 予測CSV／評価CSV／モデルが変わっていればコミット
+          git add Numbers3_predictions.csv evaluation_result.csv models/ || true
+          if ! git diff --cached --quiet; then
+            MSG="CI: update predictions/model ($(date +'%Y-%m-%d %H:%M %Z'))"
+            git commit -m "$MSG"
+            git push
           else
-            echo "self_predictions.csv not found. Skipping add."
-          fi
-
-          if [ -d self_predictions_gen ]; then
-            git add -A self_predictions_gen
-          else
-            echo "self_predictions_gen directory not found. Skipping add."
-          fi
-
-          if git diff --cached --quiet; then
-            echo "No changes from auto cycle"
-          else
-            git commit -m "Auto reinforcement update: model and predictions [skip ci]"
-            git push origin HEAD:${{ github.ref_name }}
+            echo "No changes to commit."
           fi
