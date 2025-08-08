@@ -26,7 +26,7 @@ from typing import List, Tuple, Optional, Any
 # ==== 動的 import（スペースや括弧を含むファイル名にも対応） ====
 import importlib.util
 
-DEFAULT_MODULE_PATH = Path("numbers3_predictor (2).py")
+DEFAULT_MODULE_PATH = Path("numbers3_predictor.py")
 DEFAULT_DATA_CSV = Path("numbers3.csv")
 DEFAULT_PRED_CSV = Path("Numbers3_predictions.csv")
 DEFAULT_EVAL_CSV = Path("evaluation_result.csv")
