@@ -53,16 +53,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -e
           git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
+
+          # ついでに不要アーカイブを無視
+          printf "%s\n" \
+            "chrome-linux64.zip" \
+            "chromedriver-linux64.zip" \
+            "chromedriver-linux64/" >> .gitignore || true
+
           git fetch origin
           git stash --include-untracked
           git checkout ${{ github.ref_name }}
           git pull --rebase origin ${{ github.ref_name }}
           git stash pop || true
 
-          git add numbers3.csv
+          git add numbers3.csv .gitignore
           if git diff --cached --quiet; then
             echo "No changes to numbers3.csv"
           else
@@ -77,8 +85,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -e
           git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
           git fetch origin
           git stash --include-untracked
@@ -86,7 +95,25 @@ jobs:
           git pull --rebase origin ${{ github.ref_name }}
           git stash pop || true
 
-          git add lstm_model.onnx self_predictions.csv self_predictions_gen/
+          # ここを存在チェック付きにする（以前はここで失敗していた）
+          if [ -f lstm_model.onnx ]; then
+            git add lstm_model.onnx
+          else
+            echo "lstm_model.onnx not found. Skipping add."
+          fi
+
+          if [ -f self_predictions.csv ]; then
+            git add self_predictions.csv
+          else
+            echo "self_predictions.csv not found. Skipping add."
+          fi
+
+          if [ -d self_predictions_gen ]; then
+            git add -A self_predictions_gen
+          else
+            echo "self_predictions_gen directory not found. Skipping add."
+          fi
+
           if git diff --cached --quiet; then
             echo "No changes from auto cycle"
           else
