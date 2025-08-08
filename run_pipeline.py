@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Numbers3 Orchestrator (完全版)
-- モデル読み込み/初回学習
+Numbers3 Orchestrator (cloudpickle版・完全)
+- モデル読み込み/初回学習（cloudpickleで直列化）
 - 予測 → 保存（Numbers3_predictions.csv 追記・重複除去）→ Git push
 - 実績があれば評価（evaluation_result.csv に追記・重複置換）
 - 再学習 → モデル push
@@ -17,7 +17,8 @@ import json
 import os
 import sys
 import traceback
-import joblib
+import joblib  # 他のユーティリティで使う可能性があるため残置
+import cloudpickle as cp
 import pandas as pd
 from pathlib import Path
 from typing import List, Tuple, Optional, Any
@@ -25,7 +26,7 @@ from typing import List, Tuple, Optional, Any
 # ==== 動的 import（スペースや括弧を含むファイル名にも対応） ====
 import importlib.util
 
-DEFAULT_MODULE_PATH = Path("numbers3_predictor.py")
+DEFAULT_MODULE_PATH = Path("numbers3_predictor (2).py")
 DEFAULT_DATA_CSV = Path("numbers3.csv")
 DEFAULT_PRED_CSV = Path("Numbers3_predictions.csv")
 DEFAULT_EVAL_CSV = Path("evaluation_result.csv")
@@ -144,6 +145,8 @@ def main():
 
     # ロード
     mod = load_module(module_path)
+    # cloudpickle 復元時のモジュール解決を安定化
+    sys.modules.setdefault("numbers3_predictor_module", mod)
     # 必須関数/クラス
     LotoPredictor = getattr(mod, "LotoPredictor")
     save_predictions_to_csv = getattr(mod, "save_predictions_to_csv")
@@ -162,22 +165,25 @@ def main():
         target_date = dt.date.today()
     print(f"[INFO] 予測対象日: {target_date}")
 
-    # モデルのロード or 初回学習
+    # モデルのロード or 初回学習（cloudpickle）
     if model_path.exists():
         try:
-            model = joblib.load(model_path)
+            with open(model_path, "rb") as f:
+                model = cp.load(f)
             print(f"[INFO] 既存モデルをロード: {model_path}")
         except Exception as e:
             print(f"[WARN] モデルロード失敗 → 新規作成: {e}")
             model = LotoPredictor()
             model.train_model(data=df, reference_date=target_date)
-            joblib.dump(model, model_path)
+            with open(model_path, "wb") as f:
+                cp.dump(model, f)
             git_commit_and_push(str(model_path), f"Add initial model {target_date}")
     else:
         print("[INFO] 既存モデルなし → 新規学習を実行")
         model = LotoPredictor()
         model.train_model(data=df, reference_date=target_date)
-        joblib.dump(model, model_path)
+        with open(model_path, "wb") as f:
+            cp.dump(model, f)
         git_commit_and_push(str(model_path), f"Add initial model {target_date}")
 
     # ループ稼働
@@ -200,18 +206,20 @@ def main():
             # 3) 評価（実績がある場合のみ）
             actual = get_actual_for_date(df, target_date)
             if actual is not None and len(actual) == 3:
-                # numbers3_predictorのevaluate_predictionsは一覧評価を返すので先頭予測を使いつつCSVは1行要約
                 results = evaluate_predictions(preds, actual)
                 grade = "はずれ"
-                if isinstance(results, list) and len(results) > 0 and "等級" in results[0]:
+                if isinstance(results, list) and len(results) > 0 and isinstance(results[0], dict) and "等級" in results[0]:
                     grade = results[0]["等級"]
+                elif isinstance(results, dict) and "等級" in results:
+                    grade = results["等級"]
                 save_eval_row(eval_csv, target_date, preds[0][0], grade)
             else:
                 print("[INFO] 実績が未確定のため評価はスキップ")
 
-            # 4) 再学習 → モデル保存 & push
+            # 4) 再学習 → モデル保存 & push（cloudpickle）
             model.train_model(data=df, reference_date=target_date)
-            joblib.dump(model, model_path)
+            with open(model_path, "wb") as f:
+                cp.dump(model, f)
             try:
                 git_commit_and_push(str(model_path), f"Update model after retrain {target_date}")
             except Exception as e:
