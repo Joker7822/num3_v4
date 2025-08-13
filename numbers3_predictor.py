@@ -2799,10 +2799,3 @@ if __name__ == "__main__":
     # 🔁 一括予測を実行
     bulk_predict_all_past_draws()
     # main_with_improved_predictions()
-    
-
-
-
-# =========================
-# Patched LotoPredictor (safe, no-None predict)
-# =========================
