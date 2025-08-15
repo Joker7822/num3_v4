@@ -1,7 +1,6 @@
 import os
-import sys
+import subprocess
 import pandas as pd
-from datetime import datetime
 from typing import Optional
 from numbers3_predictor import (
     bulk_predict_all_past_draws,
@@ -35,7 +34,7 @@ def latest_predicted_draw_date() -> Optional[pd.Timestamp]:
     return _read_max_date_from_csv(PRED_FILE, "抽せん日")
 
 def retrain_model_and_reset_predictions():
-    """モデル再学習(上書き保存)→予測CSV削除→第1回目から全件再予測"""
+    """モデル再学習(上書き保存)→予測CSV削除→第1回目から全件再予測→即GIT PUSH"""
     print("[MODE] 予測は最新までカバー済み → 再学習＆リセット再予測を実行")
 
     # --- モデル再学習（上書き保存） ---
@@ -71,11 +70,21 @@ def retrain_model_and_reset_predictions():
     bulk_predict_all_past_draws()
     print("[DONE] 再学習＆リセット再予測が完了しました。")
 
+    # --- 再学習直後にGIT PUSH ---
+    try:
+        print("[GIT] コミット＆PUSHを実行します...")
+        subprocess.run(["git", "config", "--global", "user.name", "github-actions"], check=True)
+        subprocess.run(["git", "config", "--global", "user.email", "github-actions@github.com"], check=True)
+        subprocess.run(["git", "add", "-A"], check=True)
+        subprocess.run(["git", "commit", "-m", "Auto retrain Numbers3 model and predictions [skip ci]"], check=True)
+        subprocess.run(["git", "push"], check=True)
+        print("[GIT] PUSH完了")
+    except subprocess.CalledProcessError as e:
+        print(f"[WARN] GIT PUSHに失敗しました: {e}")
+
 def continue_predictions():
     """まだカバーされていないので、予測を継続（不足分を含め全体を再構築）"""
     print("[MODE] 予測が最新まで未カバー → 予測を継続します")
-    # 既存の実装では bulk_predict_all_past_draws() が日付単位で冪等に上書き統合するため
-    # 再実行で不足分が埋まります（既存日付は同日行を除外して追記）。
     bulk_predict_all_past_draws()
     print("[DONE] 予測の継続処理が完了しました。")
 
@@ -86,7 +95,6 @@ def main():
     print(f"[INFO] 最新の抽せん日 (numbers3.csv): {actual_max}")
     print(f"[INFO] 予測ファイルの最新日付 (Numbers3_predictions.csv): {pred_max}")
 
-    # 条件分岐
     if actual_max is not None and pred_max is not None and pred_max >= actual_max:
         retrain_model_and_reset_predictions()
     else:
