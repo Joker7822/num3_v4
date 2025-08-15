@@ -1,7 +1,7 @@
 name: Auto Scrape numbers3
 
 on:
-  # Numbers3 は月曜日から金曜日まで毎日抽せんが行われるため、平日20:00 JST（11:00 UTC）に自動実行
+  # Numbers3 は月〜金に抽せん。平日20:00 JST（11:00 UTC）に自動実行
   schedule:
     - cron: '0 11 * * 1-5'  # JST 20:00 (UTC 11:00), Monday–Friday
   workflow_dispatch:
@@ -48,7 +48,7 @@ jobs:
         run: pip install -r requirements_heavy.txt
 
       - name: Run scraping script
-        # Numbers3 の当選番号を取得するスクレイピングスクリプトを実行します
+        # Numbers3 の当選番号を取得するスクレイピングスクリプトを実行
         run: xvfb-run -a python scrapingnumbers3.py
 
       - name: Commit and push numbers3.csv if changed
@@ -74,9 +74,9 @@ jobs:
             git push origin HEAD:${{ github.ref_name }}
           fi
 
-      - name: Run predictor script
-        # Numbers3 用の予測モデルを実行し、予測結果および評価を生成します
-        run: xvfb-run -a python run_model_evolution.py
+      - name: Run predictor controller (retrain or continue)
+        # 条件分岐：最新まで予測済みなら再学習→CSV削除→第1回から再予測、未カバーなら継続予測
+        run: python rerun_or_continue_numbers3.py
 
       - name: Commit and push prediction results if changed
         env:
@@ -92,10 +92,8 @@ jobs:
           git pull --rebase origin ${{ github.ref_name }}
           git stash pop || true
 
-          git add Numbers3_predictions.csv \
-                  evaluation_result.csv \
-                  evaluation_summary.txt \
-                  self_predictions.csv
+          # 削除（Numbers3_predictions.csv の一時削除など）も確実にステージ
+          git add -A
 
           if git diff --cached --quiet; then
             echo "No prediction result changes"
