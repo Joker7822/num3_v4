@@ -1,94 +1,94 @@
-
 import os
 import sys
 import pandas as pd
 from datetime import datetime
-
-# Import pipeline utilities from numbers3_predictor
+from typing import Optional
 from numbers3_predictor import (
     bulk_predict_all_past_draws,
-    evaluate_and_summarize_predictions,
     LotoPredictor,
     preprocess_data,
-    set_global_seed,
+    set_global_seed
 )
 
 PRED_FILE = "Numbers3_predictions.csv"
 ACTUAL_FILE = "numbers3.csv"
+MODEL_PATH = "numbers3_model.pkl"  # 上書き保存
 
-def read_latest_draw_date(csv_path: str) -> pd.Timestamp:
-    df = pd.read_csv(csv_path)
-    df["抽せん日"] = pd.to_datetime(df["抽せん日"], errors="coerce")
-    latest = df["抽せん日"].max()
-    if pd.isna(latest):
-        raise ValueError("numbers3.csv に有効な抽せん日が見つかりません。")
-    return latest.normalize()
-
-def read_latest_pred_date(pred_path: str) -> pd.Timestamp | None:
-    if not os.path.exists(pred_path) or os.path.getsize(pred_path) == 0:
+def _read_max_date_from_csv(path: str, col: str) -> Optional[pd.Timestamp]:
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
         return None
     try:
-        df = pd.read_csv(pred_path)
-        if "抽せん日" not in df.columns or df.empty:
+        df = pd.read_csv(path)
+        if col not in df.columns or df.empty:
             return None
-        df["抽せん日"] = pd.to_datetime(df["抽せん日"], errors="coerce")
-        latest = df["抽せん日"].max()
-        if pd.isna(latest):
-            return None
-        return latest.normalize()
-    except Exception:
+        df[col] = pd.to_datetime(df[col], errors="coerce")
+        max_dt = df[col].max()
+        return pd.to_datetime(max_dt) if pd.notna(max_dt) else None
+    except Exception as e:
+        print(f"[WARN] CSV読み込みに失敗: {path} → {e}")
         return None
+
+def latest_actual_draw_date() -> Optional[pd.Timestamp]:
+    return _read_max_date_from_csv(ACTUAL_FILE, "抽せん日")
+
+def latest_predicted_draw_date() -> Optional[pd.Timestamp]:
+    return _read_max_date_from_csv(PRED_FILE, "抽せん日")
+
+def retrain_model_and_reset_predictions():
+    """モデル再学習(上書き保存)→予測CSV削除→第1回目から全件再予測"""
+    print("[MODE] 予測は最新までカバー済み → 再学習＆リセット再予測を実行")
+
+    # --- モデル再学習（上書き保存） ---
+    set_global_seed(42)
+    df = pd.read_csv(ACTUAL_FILE)
+    df["抽せん日"] = pd.to_datetime(df["抽せん日"], errors="coerce")
+
+    # 入力次元の見積り
+    X, _, _ = preprocess_data(df)
+    input_size = X.shape[1] if X is not None else 10
+
+    predictor = LotoPredictor(input_size=input_size, hidden_size=128)
+    predictor.train_model(df)
+
+    # 上書き保存（joblibを使ってシンプルに保存）
+    try:
+        import joblib
+        joblib.dump(predictor, MODEL_PATH)
+        print(f"[SAVE] モデルを上書き保存しました: {MODEL_PATH}")
+    except Exception as e:
+        print(f"[WARN] モデル保存に失敗 (継続します): {e}")
+
+    # --- 予測CSV削除 ---
+    if os.path.exists(PRED_FILE):
+        try:
+            os.remove(PRED_FILE)
+            print(f"[CLEAN] {PRED_FILE} を削除しました")
+        except Exception as e:
+            print(f"[WARN] 予測ファイル削除に失敗: {e}")
+
+    # --- 第1回目からの全件再予測 ---
+    print("[REBUILD] 過去全抽せん回を対象に再予測を実行します...")
+    bulk_predict_all_past_draws()
+    print("[DONE] 再学習＆リセット再予測が完了しました。")
 
 def continue_predictions():
-    print("[PREDICT] 予測が最新ではないため、欠落分の予測を実行します...")
-    # 現状の実装では、過去全抽せん回を安全に再生成します（重複は上書き処理側で排除）
+    """まだカバーされていないので、予測を継続（不足分を含め全体を再構築）"""
+    print("[MODE] 予測が最新まで未カバー → 予測を継続します")
+    # 既存の実装では bulk_predict_all_past_draws() が日付単位で冪等に上書き統合するため
+    # 再実行で不足分が埋まります（既存日付は同日行を除外して追記）。
     bulk_predict_all_past_draws()
-    print("[PREDICT] 予測処理が完了しました。")
-
-def retrain_models():
-    print("[RETRAIN] 予測が最新なので、評価→再学習を行います...")
-    try:
-        evaluate_and_summarize_predictions(
-            pred_file=PRED_FILE,
-            actual_file=ACTUAL_FILE,
-            output_csv="evaluation_result.csv",
-            output_txt="evaluation_summary.txt",
-        )
-        print("[RETRAIN] 評価完了: evaluation_result.csv / evaluation_summary.txt")
-    except Exception as e:
-        print(f"[RETRAIN][WARN] 評価に失敗: {e}（再学習は継続）")
-
-    try:
-        set_global_seed(42)
-        df = pd.read_csv(ACTUAL_FILE)
-        df["抽せん日"] = pd.to_datetime(df["抽せん日"], errors="coerce")
-        X, _, _ = preprocess_data(df)
-        input_size = X.shape[1] if X is not None else 10
-        predictor = LotoPredictor(input_size=input_size, hidden_size=128)
-        predictor.train_model(df)
-        print("[RETRAIN] 再学習完了")
-    except Exception as e:
-        print(f"[RETRAIN][ERROR] 再学習に失敗: {e}")
+    print("[DONE] 予測の継続処理が完了しました。")
 
 def main():
-    print("=== Numbers3 Orchestrator ===")
-    try:
-        latest_draw = read_latest_draw_date(ACTUAL_FILE)
-        print(f"[INFO] 最新の抽せん日: {latest_draw.date()}")
-    except Exception as e:
-        print(f"[ERROR] 抽せん日取得に失敗: {e}")
-        sys.exit(1)
+    actual_max = latest_actual_draw_date()
+    pred_max = latest_predicted_draw_date()
 
-    latest_pred = read_latest_pred_date(PRED_FILE)
-    if latest_pred is None:
-        print("[INFO] 予測ファイルがない/空/不正のため、予測を開始します。")
-        continue_predictions()
-        return
+    print(f"[INFO] 最新の抽せん日 (numbers3.csv): {actual_max}")
+    print(f"[INFO] 予測ファイルの最新日付 (Numbers3_predictions.csv): {pred_max}")
 
-    print(f"[INFO] 予測ファイル内の最新抽せん日: {latest_pred.date()}")
-
-    if latest_pred >= latest_draw:
-        retrain_models()
+    # 条件分岐
+    if actual_max is not None and pred_max is not None and pred_max >= actual_max:
+        retrain_model_and_reset_predictions()
     else:
         continue_predictions()
 
