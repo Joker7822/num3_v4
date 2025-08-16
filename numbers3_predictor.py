@@ -1771,7 +1771,7 @@ def evaluate_and_summarize_predictions(
 
     # 2025-07-01以降の各予測の集計 ===
     lines.append("\n== 🆕 2025-06-01以降の各予測集計 ==")
-    target_date = datetime(2025, 6, 1).date()
+    target_date = datetime(2025, 7, 1).date()
 
     for i in range(1, 6):
         subset = eval_df[
@@ -1794,7 +1794,7 @@ def evaluate_and_summarize_predictions(
         cost = total_preds * cost_per_draw
         profit = total_reward - cost
 
-        lines.append(f"\n== 📅 予測{i}（2025-06-01以降） ==")
+        lines.append(f"\n== 📅 予測{i}（2025-07-01以降） ==")
         lines.append(f"ボックス: {box} 件, ストレート: {straight} 件")
         lines.append(f"的中率: {acc:.2f}%")
         lines.append(f"賞金: ¥{total_reward:,}, コスト: ¥{cost:,}, 損益: {'+' if profit >= 0 else '-'}¥{abs(profit):,}")
