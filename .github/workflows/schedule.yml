@@ -6,6 +6,13 @@ on:
     - cron: '0 11 * * 1-5'  # JST 20:00 (UTC 11:00), Monday–Friday
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-numbers3-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
@@ -13,6 +20,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -100,4 +110,48 @@ jobs:
           else
             git commit -m "Auto update Numbers3 prediction results [skip ci]"
             git push origin HEAD:${{ github.ref_name }}
+          fi
+
+      # === NEW: joker/num3_v2 に models/latest 等を上書き同期 ===
+      - name: Sync to secondary repo (joker/num3_v2)
+        if: always()
+        env:
+          SECONDARY_REPO: joker/num3_v2
+          SECONDARY_BRANCH: main
+          NUM3_REPO_TOKEN: ${{ secrets.NUM3_REPO_TOKEN }}  # PAT (repo write) を用意
+        run: |
+          set -e
+          if [ -z "${NUM3_REPO_TOKEN}" ]; then
+            echo "NUM3_REPO_TOKEN is not set. Skip syncing."
+            exit 0
+          fi
+
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+          # Clone secondary repo
+          rm -rf num3_repo
+          git clone --depth 1 "https://x-access-token:${NUM3_REPO_TOKEN}@github.com/${SECONDARY_REPO}.git" num3_repo
+          cd num3_repo
+          git checkout "${SECONDARY_BRANCH}" || git checkout -b "${SECONDARY_BRANCH}"
+          cd ..
+
+          # 上書きコピー（--delete で不要物は削除）
+          mkdir -p num3_repo/models/latest
+          rsync -a --delete models/latest/ num3_repo/models/latest/ || true
+
+          # 予測や元データも同期したい場合（任意）
+          mkdir -p num3_repo/predictions
+          cp -f numbers3.csv num3_repo/ || true
+          cp -f Numbers3_predictions.csv num3_repo/predictions/ || true
+          cp -f Numbers3_evaluation.csv num3_repo/predictions/ || true
+          cp -f Numbers3_evaluation_summary.txt num3_repo/predictions/ || true
+
+          cd num3_repo
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to sync to ${SECONDARY_REPO}"
+          else
+            git commit -m "Sync latest Numbers3 model & artifacts from ${GITHUB_REPOSITORY} ($(date -u +'%Y-%m-%dT%H:%M:%SZ')) [skip ci]"
+            git push origin "${SECONDARY_BRANCH}"
           fi
