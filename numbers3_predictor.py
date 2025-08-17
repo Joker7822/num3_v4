@@ -443,9 +443,8 @@ def calculate_prediction_errors(predictions, actual_numbers):
     
     return np.mean(errors)
 
-def enforce_grade_structure(predictions, *args, **kwargs):
-    """[PATCH] 強制ロジックを撤廃: そのまま返す"""
-    return predictions"""ストレート・ボックス・ミニ構成を必ず含める (origin対応版)"""
+def enforce_grade_structure(predictions, min_required=3):
+    """ストレート・ボックス・ミニ構成を必ず含める (origin対応版)"""
     from itertools import permutations
 
     forced = []
