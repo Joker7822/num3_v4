@@ -1180,6 +1180,32 @@ class LotoPredictor:
 
                 base_conf = 0.9
                 final_conf = base_conf
+
+                # === Meta model confidence blending (if available) ===
+                # _META_BLEND_START
+                try:
+                    if self.meta_model is not None:
+                        origin_name = c.get("origin", "Blend") if "c" in locals() else "Blend"
+                        row = _meta_features_row(numbers, final_conf, origin=origin_name, rank=i+1)
+                        # meta model is an sklearn Pipeline → use predict_proba
+                        pm = None
+                        try:
+                            pm = float(self.meta_model.predict_proba(row)[0,1])
+                        except Exception:
+                            # fallback to decision_function or predict
+                            try:
+                                pm = float(self.meta_model.decision_function(row))
+                                # map to 0-1 via logistic
+                                import math
+                                pm = 1/(1+math.exp(-pm))
+                            except Exception:
+                                pm = float(self.meta_model.predict(row)[0])
+                                # clamp to [0,1] if it's a margin
+                                pm = max(0.0, min(1.0, pm))
+                        final_conf = 0.5 * final_conf + 0.5 * pm
+                except Exception as _:
+                    pass
+                # _META_BLEND_END
                 # メタ補正があれば使う（なくてもOK）
                 try:
                     if self.meta_model is not None and X_df is not None and i < len(X_df):
@@ -2799,3 +2825,32 @@ if __name__ == "__main__":
     # 🔁 一括予測を実行
     bulk_predict_all_past_draws()
     # main_with_improved_predictions()
+
+
+# === Injected meta-model helpers ===
+
+
+def _meta_features_row(numbers, conf, origin="Blend", rank=1):
+    """Build a single-row DataFrame expected by the sklearn Pipeline meta model."""
+    import numpy as np
+    import pandas as pd
+    a, b, c = numbers
+    s = a + b + c
+    diffs = [abs(a-b), abs(b-c), abs(a-c)]
+    return pd.DataFrame([{
+        "rank": rank,
+        "conf": conf,
+        "model": str(origin),
+        "d1": a, "d2": b, "d3": c,
+        "feat_sum": s,
+        "feat_mean": s/3.0,
+        "feat_std": float(np.std([a,b,c])),
+        "feat_min": min(numbers),
+        "feat_max": max(numbers),
+        "feat_range": max(numbers) - min(numbers),
+        "feat_is_increasing": int(a < b < c),
+        "feat_is_decreasing": int(a > b > c),
+        "feat_pair_gap_sum": float(np.sum(diffs)),
+        "feat_pair_gap_std": float(np.std(diffs)),
+    }])
+
