@@ -1,361 +1,445 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-numbers3_predictor_mod.py
--------------------------
-User's existing `numbers3_predictor.py` への“非破壊”拡張版。
-- 既存の関数名（preprocess_data / create_advanced_features など）を尊重しつつ、
-  追加の高性能特徴量と Stacking 学習・時系列CVを提供
-- 既存コードから import されても、単体スクリプトとしても動作
-
-依存: numpy, pandas, scikit-learn, joblib
-"""
-
-from __future__ import annotations
-import argparse
-import json
-import math
-from dataclasses import dataclass
-from itertools import combinations
-from typing import Any, Dict, List, Tuple
-
-import numpy as np
+import requests
+from bs4 import BeautifulSoup
 import pandas as pd
-
+import numpy as np
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import precision_score, recall_score, f1_score
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, AdaBoostRegressor, ExtraTreesRegressor
 from sklearn.ensemble import (
-    RandomForestClassifier, ExtraTreesClassifier, GradientBoostingClassifier, StackingClassifier
+    GradientBoostingRegressor, RandomForestRegressor, StackingRegressor,
+    GradientBoostingClassifier, RandomForestClassifier, HistGradientBoostingClassifier,
+    AdaBoostClassifier, ExtraTreesClassifier, BaggingClassifier
 )
-from sklearn.linear_model import LogisticRegression
-from sklearn.multioutput import MultiOutputClassifier
-from joblib import dump, load
+from sklearn.linear_model import Ridge, LogisticRegression, RidgeClassifier, Perceptron, PassiveAggressiveClassifier, SGDClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.tree import DecisionTreeClassifier, ExtraTreeClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVR
+from xgboost import XGBRegressor
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.neural_network import MLPRegressor
+from catboost import CatBoostRegressor
+from lightgbm import LGBMRegressor
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+from sklearn.ensemble import StackingRegressor
+from statsmodels.tsa.arima.model import ARIMA
+from stable_baselines3 import PPO
+from gym import spaces
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+import optuna
+import matplotlib
+matplotlib.use('Agg')  # ← ★ この行を先に追加！
+import matplotlib.pyplot as plt
+import aiohttp
+from random import shuffle
+import asyncio
+import warnings
+import re
+import platform
+import gym
+import sys
+import os
+import random
+from sklearn.metrics import precision_score, recall_score, f1_score
+from neuralforecast.models import TFT
+from neuralforecast import NeuralForecast
+import onnxruntime
+import streamlit as st
+from autogluon.tabular import TabularPredictor
+import torch.backends.cudnn
+from datetime import datetime 
+from collections import Counter
+import torch.nn.functional as F
+import math
 
-RNG_SEED = 42
-np.random.seed(RNG_SEED)
+# Windows環境のイベントループポリシーを設定
+if platform.system() == "Windows":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+warnings.filterwarnings("ignore")
 
-# =============
-# I/O utilities
-# =============
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
 
-def _parse_numbers_cell(x: Any) -> List[int]:
-    """頑健に [1,2,3] を返すパーサ"""
-    if isinstance(x, list):
-        return [int(v) for v in x][:3]
-    if isinstance(x, (tuple, set)):
-        return [int(v) for v in list(x)][:3]
-    if isinstance(x, str):
-        s = x
-        for ch in "[](){}":
-            s = s.replace(ch, " ")
-        s = s.replace(",", " ").replace("　", " ")
-        toks = [t for t in s.split() if t.isdigit()]
-        out = [int(t) for t in toks]
-        return out[:3]
-    if np.isscalar(x):
-        return [int(x)]
-    return []
+def set_global_seed(seed=SEED):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
+set_global_seed()
 
-def load_history(csv_path: str) -> pd.DataFrame:
-    df = pd.read_csv(csv_path)
-    # 列名ゆらぎ対応
-    date_col = None
-    for c in ["抽せん日", "date", "Date", "日付"]:
-        if c in df.columns:
-            date_col = c
-            break
-    nums_col = None
-    for c in ["本数字", "numbers", "当選数字", "winning_numbers"]:
-        if c in df.columns:
-            nums_col = c
-            break
-    if date_col is None or nums_col is None:
-        raise ValueError("CSVには '抽せん日' と '本数字'（または同義列）が必要です。")
+import subprocess
 
-    df = df[[date_col, nums_col]].copy()
-    df.rename(columns={date_col: "抽せん日", nums_col: "本数字"}, inplace=True)
-    df["抽せん日"] = pd.to_datetime(df["抽せん日"])
-    df.sort_values("抽せん日", inplace=True)
-    df["本数字"] = df["本数字"].map(_parse_numbers_cell)
-    df = df[df["本数字"].map(len) == 3].reset_index(drop=True)
-    if df.empty:
-        raise ValueError("有効な3桁データがありません。CSVを確認してください。")
-    return df
+def git_commit_and_push(file_path, message):
+    try:
+        subprocess.run(["git", "add", file_path], check=True)
+        diff = subprocess.run(["git", "diff", "--cached", "--quiet"])
+        if diff.returncode != 0:
+            subprocess.run(["git", "config", "--global", "user.name", "github-actions"], check=True)
+            subprocess.run(["git", "config", "--global", "user.email", "github-actions@github.com"], check=True)
+            subprocess.run(["git", "commit", "-m", message], check=True)
+            subprocess.run(["git", "push"], check=True)
+        else:
+            print(f"[INFO] No changes in {file_path}")
+    except Exception as e:
+        print(f"[WARNING] Git commit/push failed: {e}")
 
+def calculate_reward(selected_numbers, winning_numbers, cycle_scores):
+    match_count = len(set(selected_numbers) & set(winning_numbers))
+    avg_cycle_score = np.mean([cycle_scores.get(n, 999) for n in selected_numbers])
+    reward = match_count * 0.5 + max(0, 1 - avg_cycle_score / 50)
+    return reward
 
-# ========================
-# Advanced Feature Set v2
-# ========================
+class LotoEnv(gym.Env):
+    def __init__(self, historical_numbers):
+        super(LotoEnv, self).__init__()
+        self.historical_numbers = historical_numbers
+        self.action_space = spaces.Box(low=0, high=1, shape=(10,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=0, high=1, shape=(10,), dtype=np.float32)
 
-@dataclass
-class WindowConfig:
-    window: int = 60           # 直近の統計
-    prev_window: int = 60      # トレンド比較用
-    pair_window: int = 120     # ペア・トリプル統計窓
-    gap_cap: int = 120         # 欠番間隔の最大値クリップ
+    def reset(self):
+        return np.zeros(10, dtype=np.float32)
 
+def step(self, action):
+    if action.size == 0:
+        return np.zeros(10, dtype=np.float32), -1.0, True, {}
 
-def _counts_lastN(history: List[List[int]], N: int) -> np.ndarray:
-    counts = np.zeros(10, dtype=float)
-    for draw in history[-N:]:
-        for d in draw:
-            if 0 <= d <= 9:
-                counts[d] += 1.0
-    return counts
+    selected_numbers = set(np.argsort(action)[-3:])
+    target_numbers = set(self.target_numbers_list[self.current_index])
 
+    match_count = len(selected_numbers & target_numbers)
+    # cycle_scores を self.cycle_scores で持っていない場合は、適当なデフォルト値を使用する
+    avg_cycle_score = 999  # 仮に固定値を設定
+    reward = match_count * 0.5 + max(0, 1 - avg_cycle_score / 50)
 
-def _gaps(history: List[List[int]], N: int, cap: int) -> np.ndarray:
-    gaps = np.full(10, cap, dtype=float)
-    for idx_back, draw in enumerate(reversed(history[-N:]), start=1):
-        for d in set(draw):
-            gaps[d] = min(gaps[d], idx_back - 1)
-    return gaps
+    done = True
+    obs = np.zeros(10, dtype=np.float32)
+    return obs, reward, done, {}
 
+class DiversityEnv(gym.Env):
+    def __init__(self, historical_numbers):
+        super(DiversityEnv, self).__init__()
+        self.historical_numbers = historical_numbers
+        self.action_space = spaces.Box(low=0, high=1, shape=(10,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=0, high=1, shape=(10,), dtype=np.float32)
+        self.previous_outputs = set()
 
-def _co_occurrence_pairs(history: List[List[int]], N: int) -> np.ndarray:
-    """0-9 のペア(10x10上三角)の共起回数（対称行列として返す）"""
-    mat = np.zeros((10, 10), dtype=float)
-    for draw in history[-N:]:
-        for i in range(3):
-            for j in range(i + 1, 3):
-                a, b = draw[i], draw[j]
-                if 0 <= a <= 9 and 0 <= b <= 9 and a != b:
-                    mat[a, b] += 1.0
-                    mat[b, a] += 1.0
-    return mat
+    def reset(self):
+        return np.zeros(10, dtype=np.float32)
 
+    def step(self, action):
+        if action.size == 0:
+            return np.zeros(10, dtype=np.float32), -1.0, True, {}  # エラー回避
 
-def _co_occurrence_triples(history: List[List[int]], N: int) -> np.ndarray:
-    """3つ同時出現のカウント（ダイアゴナルは常に0） -> 各数字の「共起度合い」へ要約"""
-    # 各数字が「他と一緒に」出やすい傾向を 10次元に要約（単純にトリプル回数を数字ごと合算）
-    tri = np.zeros(10, dtype=float)
-    for draw in history[-N:]:
-        s = list(set(draw))
-        if len(s) == 3:
-            for d in s:
-                tri[d] += 1.0
-    return tri
+        selected = np.argsort(action)[-3:]  # または[-4:]
 
+        selected = tuple(sorted(np.argsort(action)[-4:]))
+        reward = 1.0 if selected not in self.previous_outputs else -1.0
+        self.previous_outputs.add(selected)
+        return np.zeros(10, dtype=np.float32), reward, True, {}
 
-def _entropy_from_counts(counts: np.ndarray) -> float:
-    p = counts / max(counts.sum(), 1.0)
-    p = p[p > 0]
-    return float(-(p * np.log2(p)).sum()) if p.size else 0.0
+class CycleEnv(gym.Env):
+    def __init__(self, historical_numbers):
+        super(CycleEnv, self).__init__()
+        self.historical_numbers = historical_numbers
+        self.action_space = spaces.Box(low=0, high=1, shape=(10,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=0, high=1, shape=(10,), dtype=np.float32)
+        self.cycle_scores = calculate_number_cycle_score(historical_numbers)
 
+    def reset(self):
+        return np.zeros(10, dtype=np.float32)
 
-def _trend(curr_counts: np.ndarray, prev_counts: np.ndarray) -> float:
-    curr = curr_counts / max(curr_counts.sum(), 1.0)
-    prev = prev_counts / max(prev_counts.sum(), 1.0)
-    return float(np.abs(curr - prev).sum())
+    def step(self, action):
+        if action.size == 0:
+            return np.zeros(10, dtype=np.float32), -1.0, True, {}  # エラー回避
 
+        selected = np.argsort(action)[-3:]  # または[-4:]
 
-def build_dataset_v2(df: pd.DataFrame, cfg: WindowConfig):
+        selected = np.argsort(action)[-4:]
+        avg_cycle = np.mean([self.cycle_scores.get(n, 999) for n in selected])
+        reward = max(0, 1 - (avg_cycle / 50))
+        return np.zeros(10, dtype=np.float32), reward, True, {}
+
+class ProfitLotoEnv(gym.Env):
+    def __init__(self, historical_numbers):
+        super(ProfitLotoEnv, self).__init__()
+        self.historical_numbers = historical_numbers
+        self.action_space = spaces.Box(low=0, high=1, shape=(10,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=0, high=1, shape=(10,), dtype=np.float32)
+
+    def reset(self):
+        return np.zeros(10, dtype=np.float32)
+
+    def step(self, action):
+        if action.size == 0:
+            return np.zeros(10, dtype=np.float32), -1.0, True, {}  # エラー回避
+
+        selected = np.argsort(action)[-3:]  # または[-4:]
+
+        selected = list(np.argsort(action)[-3:])
+        reward_table = {
+            "ストレート": 90000,
+            "ボックス": 10000,
+            "ミニ": 4000,
+            "はずれ": -200
+        }
+        best_reward = -200
+        for winning in self.historical_numbers:
+            result = classify_numbers3_prize(selected, winning)
+            reward = reward_table.get(result, -200)
+            if reward > best_reward:
+                best_reward = reward
+        return np.zeros(10, dtype=np.float32), best_reward, True, {}
+
+class MultiAgentPPOTrainer:
+    def __init__(self, historical_data, total_timesteps=5000):
+        self.historical_data = historical_data
+        self.total_timesteps = total_timesteps
+        self.agents = {}
+
+    def train_agents(self):
+        envs = {
+            "accuracy": LotoEnv(self.historical_data),
+            "diversity": DiversityEnv(self.historical_data),
+            "cycle": CycleEnv(self.historical_data),
+            "profit": ProfitLotoEnv(self.historical_data)  # ★ ここを追加
+        }
+
+        for name, env in envs.items():
+            model = PPO("MlpPolicy", env, verbose=0)
+            model.learn(total_timesteps=self.total_timesteps)
+            self.agents[name] = model
+            print(f"[INFO] PPO {name} エージェント学習完了")
+
+    def predict_all(self, num_candidates=50):
+        predictions = []
+        for name, model in self.agents.items():
+            obs = model.env.reset()
+            for _ in range(num_candidates // 3):
+                action, _ = model.predict(obs)
+                selected = list(np.argsort(action)[-4:])
+                predictions.append((selected, 0.9))  # 信頼度は仮
+        return predictions
+
+class AdversarialLotoEnv(gym.Env):
+    def __init__(self, target_numbers_list):
+        """
+        GANが生成した番号（target_numbers_list）をターゲットとし、
+        PPOに「それらを当てさせる」対戦環境
+        """
+        super(AdversarialLotoEnv, self).__init__()
+        self.target_numbers_list = target_numbers_list
+        self.current_index = 0
+        self.action_space = spaces.Box(low=0, high=1, shape=(10,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=0, high=1, shape=(10,), dtype=np.float32)
+
+    def reset(self):
+        self.current_index = (self.current_index + 1) % len(self.target_numbers_list)
+        return np.zeros(10, dtype=np.float32)
+
+    def step(self, action):
+        if action.size == 0:
+            return np.zeros(10, dtype=np.float32), -1.0, True, {}
+
+        selected_numbers = set(np.argsort(action)[-3:])
+        target_numbers = set(self.target_numbers_list[self.current_index])
+
+        match_count = len(selected_numbers & target_numbers)
+        avg_cycle_score = np.mean([self.cycle_scores.get(n, 999) for n in selected_numbers])
+        reward = match_count * 0.5 + max(0, 1 - avg_cycle_score / 50)
+
+        done = True
+        obs = np.zeros(10, dtype=np.float32)
+        return obs, reward, done, {}
+
+def score_real_structure_similarity(numbers):
     """
-    t 時点の特徴量は「t 以前の履歴のみ」を使用（リーク防止）
-    特徴:
-      - freq(10), inv_gap(10), pair_strength(10), triple_strength(10),
-        entropy(1), trend(1), periodic_sin(1), periodic_cos(1) = 44 次元
-    ラベル: t の当選数字の multi-hot(10)
+    数字リストに対して、「本物らしい構造かどうか」を評価するスコア（0〜1）
+    - 合計が10〜20
+    - 重複がない
+    - 並びが昇順 or 降順
     """
-    W = max(cfg.window, cfg.prev_window, cfg.pair_window)
-    X_list, Y_list, TS = [], [], []
+    if len(numbers) != 3:
+        return 0
+    score = 0
+    if 10 <= sum(numbers) <= 20:
+        score += 1
+    if len(set(numbers)) == 3:
+        score += 1
+    if numbers == sorted(numbers) or numbers == sorted(numbers, reverse=True):
+        score += 1
+    return score / 3  # 最大3点満点を0〜1スケール
 
-    seq = df["本数字"].tolist()
-    tss = df["抽せん日"].tolist()
+class LotoGAN(nn.Module):
+    def __init__(self, noise_dim=100):
+        super(LotoGAN, self).__init__()
+        self.generator = nn.Sequential(
+            nn.Linear(noise_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 10),
+            nn.Sigmoid()
+        )
+        self.discriminator = nn.Sequential(
+            nn.Linear(10, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+            nn.Sigmoid()
+        )
+        self.noise_dim = noise_dim
 
-    for t in range(W, len(df)):
-        hist = seq[:t]
+    def generate_samples(self, num_samples):
+        noise = torch.randn(num_samples, self.noise_dim)
+        with torch.no_grad():
+            samples = self.generator(noise)
+        return samples.numpy()
 
-        counts = _counts_lastN(hist, cfg.window)
-        prev_counts = _counts_lastN(hist[:-cfg.window] if len(hist) > cfg.window else hist, cfg.prev_window)
-        gaps = _gaps(hist, cfg.window, cfg.gap_cap)
-        pairs = _co_occurrence_pairs(hist, cfg.pair_window).sum(axis=1)  # 各数字の共起強度へ要約
-        triples = _co_occurrence_triples(hist, cfg.pair_window)
+    def evaluate_generated_numbers(self, sample_tensor):
+        """
+        sample_tensor: shape=(10,) のTensor（0〜1値で各数字のスコア）
+        上位3つを選んで番号に変換 → 判別器スコアと構造スコアを合成
+        """
+        numbers = list(np.argsort(sample_tensor.cpu().numpy())[-3:])
+        numbers.sort()
+        real_score = score_real_structure_similarity(numbers)
 
-        freq = counts / max(counts.sum(), 1.0)
-        inv_gap = 1.0 / (1.0 + gaps)
-        pair_strength = pairs / max(pairs.sum(), 1.0)
-        triple_strength = triples / max(triples.sum(), 1.0)
-        entropy = _entropy_from_counts(counts)
-        tr = _trend(counts, prev_counts)
-        sin_t = math.sin(2 * math.pi * (t % 7) / 7.0)
-        cos_t = math.cos(2 * math.pi * (t % 7) / 7.0)
+        with torch.no_grad():
+            discriminator_score = self.discriminator(sample_tensor.unsqueeze(0)).item()
 
-        feats = np.concatenate([
-            freq, inv_gap, pair_strength, triple_strength, [entropy, tr, sin_t, cos_t]
-        ]).astype(np.float32)
-        X_list.append(feats)
+        final_score = 0.5 * discriminator_score + 0.5 * real_score
+        return final_score
 
-        y = np.zeros(10, dtype=int)
-        for d in seq[t]:
-            if 0 <= d <= 9:
-                y[d] = 1
-        Y_list.append(y)
-        TS.append(tss[t])
+class DiffusionNumberGenerator(nn.Module):
+    def __init__(self, noise_dim=16, steps=100):
+        super(DiffusionNumberGenerator, self).__init__()
+        self.noise_dim = noise_dim
+        self.steps = steps
 
-    X = np.vstack(X_list)
-    Y = np.vstack(Y_list)
-    return X, Y, TS
+        self.model = nn.Sequential(
+            nn.Linear(noise_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, 10),  # 各数字のスコア（0〜9）
+            nn.Sigmoid()
+        )
 
+    def forward(self, x):
+        return self.model(x)
 
-# ================================
-# Model: Multi-label Stacking v2
-# ================================
+    def generate(self, num_samples=20):
+        samples = []
+        for _ in range(num_samples):
+            noise = torch.randn(1, self.noise_dim)
+            x = noise
+            for _ in range(self.steps):
+                noise_grad = torch.randn_like(x) * 0.1
+                x = x - 0.01 * x + noise_grad
+            with torch.no_grad():
+                scores = self.forward(x).squeeze().numpy()
+            top4 = np.argsort(scores)[-4:]
+            samples.append(sorted(top4.tolist()))
+        return samples
 
-def build_stacking_model(random_state: int = RNG_SEED) -> MultiOutputClassifier:
-    base = [
-        ("rf", RandomForestClassifier(
-            n_estimators=500, random_state=random_state, n_jobs=-1
-        )),
-        ("et", ExtraTreesClassifier(
-            n_estimators=700, random_state=random_state, n_jobs=-1
-        )),
-        ("gb", GradientBoostingClassifier(
-            learning_rate=0.05, n_estimators=400, max_depth=3, random_state=random_state
-        )),
-        ("lr", LogisticRegression(C=1.2, max_iter=3000, solver="lbfgs"))
-    ]
-    final_est = LogisticRegression(C=1.0, max_iter=3000, solver="lbfgs")
-    stack = StackingClassifier(
-        estimators=base,
-        final_estimator=final_est,
-        stack_method="predict_proba",
-        passthrough=True,
-        n_jobs=-1
-    )
-    clf = MultiOutputClassifier(stack, n_jobs=-1)
-    return clf
+def create_advanced_features(dataframe):
+    dataframe = dataframe.copy()
+    def convert_to_number_list(x):
+        if isinstance(x, str):
+            cleaned = x.strip("[]").replace(",", " ").replace("'", "").replace('"', "")
+            return [int(n) for n in cleaned.split() if n.isdigit()]
+        return x if isinstance(x, list) else [0]
 
+    dataframe['本数字'] = dataframe['本数字'].apply(convert_to_number_list)
+    dataframe['抽せん日'] = pd.to_datetime(dataframe['抽せん日'])
 
-@dataclass
-class Artifacts:
-    scaler: MinMaxScaler
-    model: MultiOutputClassifier
-    feature_dim: int
+    valid_mask = (dataframe['本数字'].apply(len) == 3)
+    dataframe = dataframe[valid_mask].copy()
 
+    if dataframe.empty:
+        print("[ERROR] 有効な本数字が存在しません（4桁データがない）")
+        return pd.DataFrame()  # 空のDataFrameを返す
 
-def time_series_cv(X: np.ndarray, Y: np.ndarray, splits: int = 5) -> Dict[str, float]:
-    tscv = TimeSeriesSplit(n_splits=splits)
-    f1s, ps, rs = [], [], []
-    for tr, va in tscv.split(X):
-        Xtr, Xva = X[tr], X[va]
-        Ytr, Yva = Y[tr], Y[va]
+    nums_array = np.vstack(dataframe['本数字'].values)
+    features = pd.DataFrame(index=dataframe.index)
 
-        sc = MinMaxScaler()
-        Xtr = sc.fit_transform(Xtr)
-        Xva = sc.transform(Xva)
+    features['数字合計'] = nums_array.sum(axis=1)
+    features['数字平均'] = nums_array.mean(axis=1)
+    features['最大'] = nums_array.max(axis=1)
+    features['最小'] = nums_array.min(axis=1)
+    features['標準偏差'] = np.std(nums_array, axis=1)
 
-        mdl = build_stacking_model()
-        mdl.fit(Xtr, Ytr)
+    return pd.concat([dataframe, features], axis=1)
 
-        proba = np.stack([p[:, 1] for p in mdl.predict_proba(Xva)], axis=1)
-        top3 = np.argsort(-proba, axis=1)[:, :3]
+def preprocess_data(data):
+    """データの前処理: 特徴量の作成 & スケーリング"""
+    
+    # 特徴量作成
+    processed_data = create_advanced_features(data)
 
-        Yhat = np.zeros_like(Yva)
-        for i, idxs in enumerate(top3):
-            Yhat[i, idxs] = 1
+    if processed_data.empty:
+        print("エラー: 特徴量生成後のデータが空です。データのフォーマットを確認してください。")
+        return None, None, None
 
-        f1s.append(f1_score(Yva, Yhat, average="macro", zero_division=0))
-        ps.append(precision_score(Yva, Yhat, average="macro", zero_division=0))
-        rs.append(recall_score(Yva, Yhat, average="macro", zero_division=0))
-    return {"f1_macro": float(np.mean(f1s)), "precision_macro": float(np.mean(ps)), "recall_macro": float(np.mean(rs))}
+    print("=== 特徴量作成後のデータ ===")
+    print(processed_data.head())
 
+    # 数値特徴量の選択
+    numeric_features = processed_data.select_dtypes(include=[np.number]).columns
+    X = processed_data[numeric_features].fillna(0)  # 欠損値を0で埋める
 
-def train_all(X: np.ndarray, Y: np.ndarray) -> Artifacts:
-    sc = MinMaxScaler()
-    Xs = sc.fit_transform(X)
-    mdl = build_stacking_model()
-    mdl.fit(Xs, Y)
-    return Artifacts(scaler=sc, model=mdl, feature_dim=X.shape[1])
+    print(f"数値特徴量の数: {len(numeric_features)}, サンプル数: {X.shape[0]}")
 
+    if X.empty:
+        print("エラー: 数値特徴量が作成されず、データが空になっています。")
+        return None, None, None
 
-# =====================
-# Inference / Candidates
-# =====================
+    # スケーリング
+    scaler = MinMaxScaler()
+    X_scaled = scaler.fit_transform(X)
 
-def rank_digits(proba_vec: np.ndarray) -> List[int]:
-    return list(np.argsort(-proba_vec))
+    print("=== スケーリング後のデータ ===")
+    print(X_scaled[:5])  # 最初の5件を表示
 
+    # 目標変数の準備
+    try:
+        y = np.array([list(map(int, nums)) for nums in processed_data['本数字']])
+    except Exception as e:
+        print(f"エラー: 目標変数の作成時に問題が発生しました: {e}")
+        return None, None, None
 
-def score_combinations(proba_vec: np.ndarray, k: int = 3, top_m: int = 20, mode: str = "sum"):
-    combos = list(combinations(range(10), k))
-    scored = []
-    for c in combos:
-        ps = [proba_vec[d] for d in c]
-        val = float(np.prod(ps)) if mode == "product" else float(np.sum(ps))
-        scored.append((list(c), val))
-    scored.sort(key=lambda z: z[1], reverse=True)
-    return scored[:top_m]
+    return X_scaled, y, scaler
 
+def convert_numbers_to_binary_vectors(data):
+    vectors = []
+    for numbers in data['本数字']:
+        vec = np.zeros(10)
+        for n in numbers:
+            if 0 <= n <= 9:
+                vec[n] = 1
+        vectors.append(vec)
+    return np.array(vectors)
 
-def predict_next(art: Artifacts, X_last: np.ndarray, k: int = 3, top_m: int = 20) -> Dict[str, Any]:
-    Xs = art.scaler.transform(X_last.reshape(1, -1))
-    proba_list = art.model.predict_proba(Xs)
-    proba = np.stack([p[:, 1] for p in proba_list], axis=1).ravel()
+def calculate_prediction_errors(predictions, actual_numbers):
+    """予測値と実際の当選結果の誤差を計算し、特徴量として保存"""
+    errors = []
+    for pred, actual in zip(predictions, actual_numbers):
+        pred_numbers = set(pred[0])
+        actual_numbers = set(actual)
+        error_count = len(actual_numbers - pred_numbers)
+        errors.append(error_count)
+    
+    return np.mean(errors)
 
-    return {
-        "digit_probabilities": {i: float(proba[i]) for i in range(10)},
-        "top_k_digits": rank_digits(proba)[:k],
-        "top_combinations": [{"combo": c, "score": s} for c, s in score_combinations(proba, k=k, top_m=top_m)]
-    }
-
-
-# ========
-#   CLI
-# ========
-
-def main():
-    ap = argparse.ArgumentParser(description="numbers3 predictor - mod version (stacking & advanced features)")
-    ap.add_argument("--csv", type=str, required=True, help="履歴CSVのパス（列: 抽せん日, 本数字）")
-    ap.add_argument("--window", type=int, default=60, help="直近の統計窓")
-    ap.add_argument("--prev-window", type=int, default=60, help="トレンド比較用窓")
-    ap.add_argument("--pair-window", type=int, default=120, help="ペア/トリプル共起の窓")
-    ap.add_argument("--gap-cap", type=int, default=120, help="欠番間隔の上限クリップ")
-    ap.add_argument("--cv-splits", type=int, default=5, help="TimeSeriesSplit 分割数")
-    ap.add_argument("--k", type=int, default=3, choices=[3, 4], help="候補に使う桁数")
-    ap.add_argument("--top-m", type=int, default=20, help="上位組合せの出力数")
-    ap.add_argument("--model-out", type=str, default="numbers3_mod_artifacts.joblib", help="学習済みの保存先")
-    ap.add_argument("--pred-out", type=str, default="numbers3_mod_candidates.json", help="予測出力(JSON)")
-    args = ap.parse_args()
-
-    # 1) データ読込 & 特徴量
-    df = load_history(args.csv)
-    cfg = WindowConfig(window=args.window, prev_window=args.prev_window, pair_window=args.pair_window, gap_cap=args.gap_cap)
-    X, Y, TS = build_dataset_v2(df, cfg)
-    print(f"[INFO] Dataset: X={X.shape} Y={Y.shape} samples={len(TS)} (from {TS[0].date()} to {TS[-1].date()})")
-
-    # 2) 時系列CV
-    scores = time_series_cv(X, Y, splits=args.cv_splits)
-    print("[CV] macro-F1={f1_macro:.4f}  Precision={precision_macro:.4f}  Recall={recall_macro:.4f}".format(**scores))
-
-    # 3) 全データで学習
-    art = train_all(X, Y)
-
-    # 保存
-    if args.model_out:
-        dump(art, args.model_out)
-        print(f"[SAVE] Artifacts -> {args.model_out}")
-
-    # 4) 直近特徴量で次回予測
-    result = predict_next(art, X[-1], k=args.k, top_m=args.top_m)
-    if args.pred_out:
-        with open(args.pred_out, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-        print(f"[SAVE] Candidates -> {args.pred_out}")
-
-    # 表示
-    print("\n=== Next draw (mod) ===")
-    print("Digit Probabilities:")
-    for d, p in result["digit_probabilities"].items():
-        print(f"  {d}: {p:.4f}")
-    print(f"Top-{args.k} digits:", result["top_k_digits"])
-    print("Top combinations:")
-    for row in result["top_combinations"]:
-        print(f"  {row['combo']}  score={row['score']:.4f}")
-
-
-if __name__ == "__main__":
-    main()
